@@ -12,9 +12,6 @@ from imblearn.combine import SMOTETomek
 import shap
 import base64
 from io import BytesIO
-from sklearn.linear_model import LogisticRegression
-from sklearn.svm import SVC
-from sklearn.ensemble import GradientBoostingClassifier
 
 # Set page configuration
 st.set_page_config(
@@ -124,33 +121,6 @@ def train_models(X, y):
             'probabilities': rf.predict_proba(X_test_scaled)[:, 1]
         }
     
-    with st.spinner('Training Logistic Regression model...'):
-        lr = LogisticRegression(random_state=42, max_iter=1000)
-        lr.fit(X_train_scaled, y_train)
-        models['Logistic Regression'] = {
-            'model': lr,
-            'predictions': lr.predict(X_test_scaled),
-            'probabilities': lr.predict_proba(X_test_scaled)[:, 1]
-        }
-    
-    with st.spinner('Training SVM model...'):
-        svm = SVC(probability=True, random_state=42, kernel='linear')  # Linear kernel for feature importance
-        svm.fit(X_train_scaled, y_train)
-        models['SVM'] = {
-            'model': svm,
-            'predictions': svm.predict(X_test_scaled),
-            'probabilities': svm.predict_proba(X_test_scaled)[:, 1]
-        }
-    
-    with st.spinner('Training Gradient Boosting model...'):
-        gb = GradientBoostingClassifier(random_state=42)
-        gb.fit(X_train_scaled, y_train)
-        models['Gradient Boosting'] = {
-            'model': gb,
-            'predictions': gb.predict(X_test_scaled),
-            'probabilities': gb.predict_proba(X_test_scaled)[:, 1]
-        }
-    
     return models, X_train, X_test, y_train, y_test, scaler, X_train_scaled, X_test_scaled
 
 def plot_confusion_matrix(y_true, y_pred, title):
@@ -163,16 +133,7 @@ def plot_confusion_matrix(y_true, y_pred, title):
     return fig
 
 def plot_feature_importance(model, feature_names, title):
-    if isinstance(model, (RandomForestClassifier, XGBClassifier, GradientBoostingClassifier)):
-        importances = model.feature_importances_
-    elif isinstance(model, LogisticRegression):
-        importances = np.abs(model.coef_[0])  # Use absolute coefficients
-    elif isinstance(model, SVC) and model.kernel == 'linear':
-        importances = np.abs(model.coef_[0])  # Use absolute coefficients for linear SVM
-    else:
-        st.warning(f"Feature importance not available for {title}")
-        return None
-    
+    importances = model.feature_importances_
     indices = np.argsort(importances)[::-1]
     features = np.array(feature_names)[indices]
     values = importances[indices]
@@ -186,15 +147,7 @@ def plot_feature_importance(model, feature_names, title):
 
 def clinical_feature_analysis(model, feature_names):
     # Get feature importances
-    if isinstance(model, (RandomForestClassifier, XGBClassifier, GradientBoostingClassifier)):
-        importances = model.feature_importances_
-    elif isinstance(model, LogisticRegression):
-        importances = np.abs(model.coef_[0])
-    elif isinstance(model, SVC) and model.kernel == 'linear':
-        importances = np.abs(model.coef_[0])
-    else:
-        st.warning("Clinical feature analysis not supported for this model.")
-        return None, None, None, 0
+    importances = model.feature_importances_
     
     # Define modifiability categories
     modifiable = [
@@ -283,14 +236,14 @@ def predict_individual_risk(input_data, model, X_columns, scaler, explainer=None
     proba = model.predict_proba(df_input_scaled)[0][1]
     
     # Create SHAP explanation if explainer exists
-    shap_values = None
     if explainer is not None:
         try:
             shap_values = explainer(df_input_scaled)
-        except Exception as e:
-            st.warning(f"SHAP explanation not available: {e}")
+            return prediction, proba, shap_values
+        except:
+            return prediction, proba, None
     
-    return prediction, proba, shap_values
+    return prediction, proba, None
 
 # App navigation
 app_mode = st.sidebar.selectbox(
@@ -489,15 +442,8 @@ elif app_mode == "Model Training":
                     st.session_state.X_train_scaled = X_train_scaled
                     st.session_state.X_test_scaled = X_test_scaled
                     
-                    # After training models, create SHAP explainer for tree-based models
-                    if 'XGBoost' in models or 'Random Forest' in models or 'Gradient Boosting' in models:
-                        st.session_state.explainer = {
-                            'XGBoost': shap.Explainer(models['XGBoost']['model'], X_train_scaled) if 'XGBoost' in models else None,
-                            'Random Forest': shap.Explainer(models['Random Forest']['model'], X_train_scaled) if 'Random Forest' in models else None,
-                            'Gradient Boosting': shap.Explainer(models['Gradient Boosting']['model'], X_train_scaled) if 'Gradient Boosting' in models else None
-                        }
-                    else:
-                        st.session_state.explainer = None
+                    # Create SHAP explainer for XGBoost
+                    st.session_state.explainer = shap.Explainer(models['XGBoost']['model'], X_train_scaled)
                     
                     st.success("Models trained successfully!")
                 except Exception as e:
@@ -661,7 +607,7 @@ elif app_mode == "Risk Prediction":
                     scaler = st.session_state.scaler
                     
                     # Get explainer if available
-                    explainer = st.session_state.explainer.get(selected_model) if st.session_state.explainer else None
+                    explainer = st.session_state.explainer if selected_model == "XGBoost" else None
                     
                     # Make prediction
                     prediction, probability, shap_values = predict_individual_risk(
