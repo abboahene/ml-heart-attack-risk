@@ -5,16 +5,17 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.svm import SVC
+from sklearn.neural_network import MLPClassifier
 from xgboost import XGBClassifier
-from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, roc_curve, auc, precision_recall_curve
 from imblearn.combine import SMOTETomek
 import shap
 import base64
 from io import BytesIO
-from sklearn.linear_model import LogisticRegression
-from sklearn.svm import SVC
-from sklearn.ensemble import GradientBoostingClassifier
+import time
 
 # Set page configuration
 st.set_page_config(
@@ -41,6 +42,10 @@ st.markdown("""
         padding: 10px;
         border-radius: 5px;
     }
+    .model-metrics {
+        display: flex;
+        justify-content: space-between;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -61,7 +66,7 @@ st.sidebar.title("Controls")
 @st.cache_data
 def load_sample_data():
     try:
-        df = pd.read_csv("heart-attack-risk-prediction-dataset.csv")
+        df = pd.read_csv("sample_data.csv")
         return df
     except FileNotFoundError:
         st.error("Sample dataset not found. Please upload your own data.")
@@ -133,8 +138,8 @@ def train_models(X, y):
             'probabilities': lr.predict_proba(X_test_scaled)[:, 1]
         }
     
-    with st.spinner('Training SVM model...'):
-        svm = SVC(probability=True, random_state=42, kernel='linear')  # Linear kernel for feature importance
+    with st.spinner('Training Support Vector Machine model...'):
+        svm = SVC(random_state=42, probability=True)
         svm.fit(X_train_scaled, y_train)
         models['SVM'] = {
             'model': svm,
@@ -151,6 +156,15 @@ def train_models(X, y):
             'probabilities': gb.predict_proba(X_test_scaled)[:, 1]
         }
     
+    with st.spinner('Training Neural Network model...'):
+        nn = MLPClassifier(hidden_layer_sizes=(100, 50), max_iter=500, random_state=42)
+        nn.fit(X_train_scaled, y_train)
+        models['Neural Network'] = {
+            'model': nn,
+            'predictions': nn.predict(X_test_scaled),
+            'probabilities': nn.predict_proba(X_test_scaled)[:, 1]
+        }
+    
     return models, X_train, X_test, y_train, y_test, scaler, X_train_scaled, X_test_scaled
 
 def plot_confusion_matrix(y_true, y_pred, title):
@@ -162,39 +176,79 @@ def plot_confusion_matrix(y_true, y_pred, title):
     plt.title(f"Confusion Matrix - {title}")
     return fig
 
-def plot_feature_importance(model, feature_names, title):
-    if isinstance(model, (RandomForestClassifier, XGBClassifier, GradientBoostingClassifier)):
-        importances = model.feature_importances_
-    elif isinstance(model, LogisticRegression):
-        importances = np.abs(model.coef_[0])  # Use absolute coefficients
-    elif isinstance(model, SVC) and model.kernel == 'linear':
-        importances = np.abs(model.coef_[0])  # Use absolute coefficients for linear SVM
-    else:
-        st.warning(f"Feature importance not available for {title}")
-        return None
+def plot_roc_curve(y_true, probas, models):
+    fig, ax = plt.subplots(figsize=(10, 8))
     
-    indices = np.argsort(importances)[::-1]
-    features = np.array(feature_names)[indices]
-    values = importances[indices]
-
-    fig, ax = plt.subplots(figsize=(10, 6))
-    sns.barplot(x=values[:15], y=features[:15], palette='viridis', ax=ax)
-    plt.title(f'{title} Feature Importances')
-    plt.xlabel("Importance")
-    plt.ylabel("Feature")
+    for model_name, y_prob in probas.items():
+        fpr, tpr, _ = roc_curve(y_true, y_prob)
+        roc_auc = auc(fpr, tpr)
+        ax.plot(fpr, tpr, lw=2, label=f'{model_name} (AUC = {roc_auc:.3f})')
+    
+    ax.plot([0, 1], [0, 1], 'k--', lw=2)
+    ax.set_xlim([0.0, 1.0])
+    ax.set_ylim([0.0, 1.05])
+    ax.set_xlabel('False Positive Rate')
+    ax.set_ylabel('True Positive Rate')
+    ax.set_title('Receiver Operating Characteristic (ROC) Curve')
+    ax.legend(loc="lower right")
+    
     return fig
 
-def clinical_feature_analysis(model, feature_names):
-    # Get feature importances
-    if isinstance(model, (RandomForestClassifier, XGBClassifier, GradientBoostingClassifier)):
+def plot_precision_recall_curve(y_true, probas, models):
+    fig, ax = plt.subplots(figsize=(10, 8))
+    
+    for model_name, y_prob in probas.items():
+        precision, recall, _ = precision_recall_curve(y_true, y_prob)
+        ax.plot(recall, precision, lw=2, label=f'{model_name}')
+    
+    ax.set_xlim([0.0, 1.0])
+    ax.set_ylim([0.0, 1.05])
+    ax.set_xlabel('Recall')
+    ax.set_ylabel('Precision')
+    ax.set_title('Precision-Recall Curve')
+    ax.legend(loc="best")
+    
+    return fig
+
+def plot_feature_importance(model, feature_names, title):
+    # Check if model has feature_importances_ attribute
+    if hasattr(model, 'feature_importances_'):
         importances = model.feature_importances_
-    elif isinstance(model, LogisticRegression):
+        indices = np.argsort(importances)[::-1]
+        features = np.array(feature_names)[indices]
+        values = importances[indices]
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+        sns.barplot(x=values[:15], y=features[:15], palette='viridis', ax=ax)
+        plt.title(f'{title} Feature Importances')
+        plt.xlabel("Importance")
+        plt.ylabel("Feature")
+        return fig
+    elif hasattr(model, 'coef_'):
+        # For linear models like Logistic Regression
         importances = np.abs(model.coef_[0])
-    elif isinstance(model, SVC) and model.kernel == 'linear':
-        importances = np.abs(model.coef_[0])
+        indices = np.argsort(importances)[::-1]
+        features = np.array(feature_names)[indices]
+        values = importances[indices]
+        
+        fig, ax = plt.subplots(figsize=(10, 6))
+        sns.barplot(x=values[:15], y=features[:15], palette='viridis', ax=ax)
+        plt.title(f'{title} Feature Coefficients (Absolute Values)')
+        plt.xlabel("Coefficient Magnitude")
+        plt.ylabel("Feature")
+        return fig
     else:
-        st.warning("Clinical feature analysis not supported for this model.")
-        return None, None, None, 0
+        return None  # Model doesn't support direct feature importance
+
+def clinical_feature_analysis(model, feature_names):
+    # Get feature importances based on model type
+    if hasattr(model, 'feature_importances_'):
+        importances = model.feature_importances_
+    elif hasattr(model, 'coef_'):
+        importances = np.abs(model.coef_[0])  # For linear models
+    else:
+        # Create mock importances if model doesn't support them
+        importances = np.ones(len(feature_names)) / len(feature_names)
     
     # Define modifiability categories
     modifiable = [
@@ -283,19 +337,19 @@ def predict_individual_risk(input_data, model, X_columns, scaler, explainer=None
     proba = model.predict_proba(df_input_scaled)[0][1]
     
     # Create SHAP explanation if explainer exists
-    shap_values = None
     if explainer is not None:
         try:
             shap_values = explainer(df_input_scaled)
-        except Exception as e:
-            st.warning(f"SHAP explanation not available: {e}")
+            return prediction, proba, shap_values
+        except:
+            return prediction, proba, None
     
-    return prediction, proba, shap_values
+    return prediction, proba, None
 
 # App navigation
 app_mode = st.sidebar.selectbox(
     "Choose a mode",
-    ["Home", "Data Exploration", "Model Training", "Risk Prediction"]
+    ["Home", "Data Exploration", "Model Training", "Model Comparison", "Risk Prediction"]
 )
 
 # Initialize session state
@@ -327,7 +381,13 @@ if app_mode == "Home":
         
         ### Key features:
         - Data exploration and visualization
-        - Model training with XGBoost and Random Forest
+        - Training and comparison of multiple machine learning models:
+          - XGBoost
+          - Random Forest
+          - Logistic Regression
+          - Support Vector Machine (SVM) 
+          - Gradient Boosting
+          - Neural Network (MLP)
         - Clinical context analysis of risk factors
         - Personalized risk prediction
         
@@ -335,7 +395,8 @@ if app_mode == "Home":
         1. Start by uploading your dataset or use our sample data
         2. Explore the data visualizations
         3. Train and evaluate models
-        4. Get personalized risk predictions
+        4. Compare model performance
+        5. Get personalized risk predictions
         """)
     
     with col2:
@@ -477,9 +538,11 @@ elif app_mode == "Model Training":
         if st.button("Train Models"):
             with st.spinner("Training models... This may take a few minutes."):
                 try:
+                    start_time = time.time()
                     models, X_train, X_test, y_train, y_test, scaler, X_train_scaled, X_test_scaled = train_models(
                         st.session_state.X, st.session_state.y
                     )
+                    training_time = time.time() - start_time
                     
                     # Store in session state
                     st.session_state.models = models
@@ -489,17 +552,10 @@ elif app_mode == "Model Training":
                     st.session_state.X_train_scaled = X_train_scaled
                     st.session_state.X_test_scaled = X_test_scaled
                     
-                    # After training models, create SHAP explainer for tree-based models
-                    if 'XGBoost' in models or 'Random Forest' in models or 'Gradient Boosting' in models:
-                        st.session_state.explainer = {
-                            'XGBoost': shap.Explainer(models['XGBoost']['model'], X_train_scaled) if 'XGBoost' in models else None,
-                            'Random Forest': shap.Explainer(models['Random Forest']['model'], X_train_scaled) if 'Random Forest' in models else None,
-                            'Gradient Boosting': shap.Explainer(models['Gradient Boosting']['model'], X_train_scaled) if 'Gradient Boosting' in models else None
-                        }
-                    else:
-                        st.session_state.explainer = None
+                    # Create SHAP explainer for XGBoost
+                    st.session_state.explainer = shap.Explainer(models['XGBoost']['model'], X_train_scaled)
                     
-                    st.success("Models trained successfully!")
+                    st.success(f"Models trained successfully in {training_time:.2f} seconds!")
                 except Exception as e:
                     st.error(f"Error training models: {e}")
         
@@ -541,7 +597,11 @@ elif app_mode == "Model Training":
                 st.session_state.feature_names,
                 selected_model
             )
-            st.pyplot(importance_fig)
+            
+            if importance_fig:
+                st.pyplot(importance_fig)
+            else:
+                st.info(f"Feature importance visualization not available for {selected_model}.")
             
             # Clinical context analysis
             st.subheader("Clinical Context Analysis")
@@ -588,184 +648,481 @@ elif app_mode == "Model Training":
                                                 "Download Feature Importance Data"), 
                        unsafe_allow_html=True)
 
-# Risk Prediction page
-elif app_mode == "Risk Prediction":
-    st.markdown("<h2 class='sub-header'>Personalized Risk Prediction</h2>", unsafe_allow_html=True)
+# Model Comparison page
+elif app_mode == "Model Comparison":
+    st.markdown("<h2 class='sub-header'>Model Comparison</h2>", unsafe_allow_html=True)
     
     if st.session_state.models is None:
         st.warning("Please train models first!")
     else:
-        st.markdown("""
-        Enter patient information below to get a personalized heart attack risk prediction.
-        This tool can help healthcare providers identify high-risk individuals who may benefit from preventive interventions.
-        """)
+        st.write("Compare the performance of different models to select the best one for heart attack risk prediction.")
         
-        # Create two columns for input
-        col1, col2 = st.columns(2)
+        # Metrics comparison
+        st.subheader("Performance Metrics Comparison")
         
-        # Left column inputs
-        with col1:
-            st.subheader("Patient Demographics")
-            age = st.slider("Age", 18, 100, 50)
-            sex = st.radio("Sex", ["Male", "Female"])
-            family_history = st.checkbox("Family History of Heart Disease")
+        metrics = []
+        for model_name, model_data in st.session_state.models.items():
+            y_true = st.session_state.y_test
+            y_pred = model_data['predictions']
+            y_prob = model_data['probabilities']
             
-            st.subheader("Lifestyle Factors")
-            smoking = st.radio("Smoking Status", ["Non-smoker", "Former smoker", "Current smoker"])
-            physical_activity = st.slider("Physical Activity (days per week)", 0, 7, 3)
-            sleep_hours = st.slider("Average Sleep Hours", 1, 12, 7)
-            stress_level = st.slider("Stress Level (1-10)", 1, 10, 5)
+            # Calculate metrics
+            acc = accuracy_score(y_true, y_pred)
+            cm = confusion_matrix(y_true, y_pred)
+            tn, fp, fn, tp = cm.ravel()
             
-        # Right column inputs
-        with col2:
-            st.subheader("Clinical Measurements")
-            cholesterol = st.slider("Cholesterol (mg/dL)", 100, 350, 200)
-            blood_pressure = st.slider("Systolic Blood Pressure (mmHg)", 90, 200, 120)
-            bmi = st.slider("BMI", 15.0, 45.0, 25.0, 0.1)
-            heart_rate = st.slider("Resting Heart Rate (bpm)", 40, 120, 70)
+            sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
+            specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+            precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+            f1 = 2 * (precision * sensitivity) / (precision + sensitivity) if (precision + sensitivity) > 0 else 0
             
-            st.subheader("Medical Conditions")
-            diabetes = st.checkbox("Diabetes")
-            previous_heart_problems = st.checkbox("Previous Heart Problems")
-            medication = st.checkbox("Taking Heart Medication")
+            fpr, tpr, _ = roc_curve(y_true, y_prob)
+            roc_auc = auc(fpr, tpr)
+            
+            metrics.append({
+                'Model': model_name,
+                'Accuracy': acc,
+                'Sensitivity': sensitivity,
+                'Specificity': specificity,
+                'Precision': precision,
+                'F1 Score': f1,
+                'AUC': roc_auc
+            })
         
-        # Create input data dictionary
-        input_data = {
-            'Age': age,
-            'Sex_M': 1 if sex == "Male" else 0,
-            'Cholesterol': cholesterol,
-            'Blood Pressure': blood_pressure,
-            'Heart Rate': heart_rate,
-            'BMI': bmi,
-            'Family History': 1 if family_history else 0,
-            'Smoking': 0 if smoking == "Non-smoker" else (1 if smoking == "Former smoker" else 2),
-            'Physical Activity': physical_activity,
-            'Sleep Hours': sleep_hours,
-            'Stress Level': stress_level,
-            'Diabetes': 1 if diabetes else 0,
-            'Previous Heart Problems': 1 if previous_heart_problems else 0,
-            'Medication Use': 1 if medication else 0
-        }
+        metrics_df = pd.DataFrame(metrics)
+        metrics_df = metrics_df.set_index('Model')
         
-        # Model selection for prediction
-        selected_model = st.selectbox(
-            "Select model for prediction:",
-            list(st.session_state.models.keys())
-        )
+        # Format the values
+        formatted_df = metrics_df.applymap(lambda x: f"{x:.4f}")
         
-        # Make prediction
-        if st.button("Predict Risk"):
-            with st.spinner("Calculating risk..."):
+        # Add styling
+        st.dataframe(formatted_df.style.highlight_max(axis=0, color='#AED6F1'))
+        
+        # ROC Curve Comparison
+        st.subheader("ROC Curve Comparison")
+        
+        # Prepare probabilities dict for plotting
+        probas = {model_name: model_data['probabilities'] for model_name, model_data in st.session_state.models.items()}
+        
+        # Plot ROC curves
+        roc_fig = plot_roc_curve(st.session_state.y_test, probas, st.session_state.models)
+        st.pyplot(roc_fig)
+        
+        # Precision-Recall Curve
+        st.subheader("Precision-Recall Curve Comparison")
+        pr_fig = plot_precision_recall_curve(st.session_state.y_test, probas, st.session_state.models)
+        st.pyplot(pr_fig)
+        
+        # Training time comparison if available
+        if 'training_times' in st.session_state:
+            st.subheader("Training Time Comparison")
+            times_df = pd.DataFrame(st.session_state.training_times)
+            
+            fig, ax = plt.subplots(figsize=(10, 6))
+            ax.barh(times_df['Model'], times_df)
+            sns.barplot(x='Time (s)', y='Model', data=times_df, palette='viridis', ax=ax)
+            plt.title('Model Training Time Comparison')
+            plt.xlabel('Time (seconds)')
+            plt.tight_layout()
+            st.pyplot(fig)
+        
+        # Model selection recommendation
+        st.subheader("Model Recommendation")
+        
+        # Find the best model based on AUC (can change to other metrics)
+        best_model_name = metrics_df['AUC'].idxmax()
+        best_auc = metrics_df.loc[best_model_name, 'AUC']
+        
+        st.markdown(f"""
+        <div class='info-box'>
+        <p>Based on the comparison metrics, the recommended model is:</p>
+        <h3 style='color: #1E88E5;'>{best_model_name}</h3>
+        <p>This model achieves the highest AUC score of {float(best_auc):.4f}, indicating strong discriminative ability 
+        between heart attack risk classes.</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # SHAP Summary Plot for best model
+        st.subheader(f"SHAP Feature Impact for {best_model_name}")
+        
+        if st.button("Generate SHAP Analysis (may take a minute)"):
+            with st.spinner("Generating SHAP values..."):
                 try:
-                    model = st.session_state.models[selected_model]['model']
-                    scaler = st.session_state.scaler
+                    # Create explainer for the best model
+                    best_model = st.session_state.models[best_model_name]['model']
                     
-                    # Get explainer if available
-                    explainer = st.session_state.explainer.get(selected_model) if st.session_state.explainer else None
+                    # Use a sample of the test data for computation efficiency
+                    sample_size = min(100, len(st.session_state.X_test_scaled))
+                    X_sample = st.session_state.X_test_scaled[:sample_size]
                     
-                    # Make prediction
-                    prediction, probability, shap_values = predict_individual_risk(
-                        input_data,
-                        model,
-                        st.session_state.X.columns,
-                        scaler,
-                        explainer
-                    )
+                    if best_model_name == 'XGBoost':
+                        explainer = st.session_state.explainer
+                    else:
+                        explainer = shap.Explainer(best_model, st.session_state.X_train_scaled)
                     
-                    # Display results
-                    st.subheader("Prediction Results")
+                    shap_values = explainer(X_sample)
                     
-                    # Risk level
-                    risk_level = "High" if prediction == 1 else "Low"
-                    risk_color = "#FF4B4B" if risk_level == "High" else "#2E7D32"
+                    # Create and display SHAP summary plot
+                    fig, ax = plt.subplots(figsize=(10, 8))
+                    shap.summary_plot(shap_values, X_sample, feature_names=st.session_state.feature_names, show=False)
+                    plt.title(f"SHAP Feature Impact for {best_model_name}")
+                    plt.tight_layout()
+                    st.pyplot(fig)
                     
-                    st.markdown(f"""
-                    <div style="padding: 20px; border-radius: 10px; background-color: {risk_color}20; 
-                                margin-bottom: 20px; border-left: 5px solid {risk_color};">
-                        <h3 style="color: {risk_color};">Risk Level: {risk_level}</h3>
-                        <h4>Probability of Heart Attack Risk: {probability:.1%}</h4>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    # Display SHAP values if available
-                    if shap_values is not None:
-                        st.subheader("Risk Factor Analysis")
-                        st.write("The chart below shows how each factor contributes to the prediction:")
-                        
-                        # Using matplotlib to display SHAP values with feature names
-                        fig, ax = plt.subplots(figsize=(10, 6))
-                        shap.plots.waterfall(shap_values[0], max_display=10, show=False)
-                        plt.tight_layout()
-                        st.pyplot(fig)
-                        
-                        # Actionable insights based on actual feature names
-                        st.subheader("Personalized Recommendations")
-                        
-                        # Get most influential modifiable factors
-                        feature_importances = pd.DataFrame({
-                            'Feature': st.session_state.X.columns,
-                            'SHAP_value': shap_values[0].values
-                        })
-                        feature_importances = feature_importances.sort_values('SHAP_value', ascending=False)
-                        
-                        # Define modifiable factors with proper naming
-                        modifiable_factors = [
-                            'Cholesterol', 'Blood Pressure', 'BMI', 'Smoking', 
-                            'Physical Activity', 'Sleep Hours', 'Stress Level'
-                        ]
-                        
-                        # Find modifiable factors that contribute to risk
-                        risky_factors = []
-                        for factor in modifiable_factors:
-                            matching_features = feature_importances[feature_importances['Feature'].str.contains(factor)]
-                            for _, row in matching_features.iterrows():
-                                if row['SHAP_value'] > 0:  # Contributes to higher risk
-                                    risky_factors.append((row['Feature'], row['SHAP_value']))
-                        
-                        # Sort by importance
-                        risky_factors.sort(key=lambda x: x[1], reverse=True)
-                        
-                        if risky_factors:
-                            st.markdown("<h4 style='color: #1E88E5;'>Focus Areas for Risk Reduction:</h4>", unsafe_allow_html=True)
-                            for factor, value in risky_factors[:3]:
-                                factor_name = factor.replace('_', ' ').title()  # Format for better readability
-                                st.markdown(f"- **{factor_name}**: Significant impact on risk prediction (SHAP value: {value:.4f})")
-                            
-                            # Generate specific recommendations based on top factors
-                            st.markdown("### Recommended Actions:")
-                            for factor, _ in risky_factors[:3]:
-                                factor_lower = factor.lower()
-                                if 'cholesterol' in factor_lower:
-                                    st.markdown("- Consider dietary changes to lower cholesterol (reduce saturated fats, increase fiber)")
-                                elif 'blood pressure' in factor_lower:
-                                    st.markdown("- Monitor blood pressure regularly and consider lifestyle modifications to reduce it")
-                                elif 'bmi' in factor_lower:
-                                    st.markdown("- Work with healthcare provider on a weight management plan if BMI is elevated")
-                                elif 'smoking' in factor_lower:
-                                    st.markdown("- Seek smoking cessation support if currently smoking")
-                                elif 'physical activity' in factor_lower:
-                                    st.markdown("- Increase physical activity to at least 150 minutes of moderate activity per week")
-                                elif 'sleep' in factor_lower:
-                                    st.markdown("- Improve sleep habits and aim for 7-9 hours of quality sleep per night")
-                                elif 'stress' in factor_lower:
-                                    st.markdown("- Implement stress reduction techniques such as meditation or mindfulness")
-                        else:
-                            st.write("No significant modifiable risk factors identified.")
-                    
-                    # Disclaimer
                     st.markdown("""
-                    <div style="font-size: 0.8rem; padding: 10px; background-color: #F8F9FA; border-radius: 5px; margin-top: 20px;">
-                    <strong>Disclaimer:</strong> This prediction is for informational purposes only and does not constitute medical advice.
-                    Always consult with qualified healthcare providers for diagnosis and treatment decisions.
+                    <div class='info-box'>
+                    <p><strong>How to interpret:</strong> Features are ordered by their global importance. 
+                    Red points indicate higher feature values, while blue points indicate lower feature values. 
+                    Points further to the right have a higher positive impact on risk prediction.</p>
                     </div>
                     """, unsafe_allow_html=True)
                     
                 except Exception as e:
-                    st.error(f"Error making prediction: {e}")
+                    st.error(f"Error generating SHAP plot: {e}")
+
+# Risk Prediction page
+elif app_mode == "Risk Prediction":
+    st.markdown("<h2 class='sub-header'>Personalized Heart Attack Risk Prediction</h2>", unsafe_allow_html=True)
+    
+    if st.session_state.models is None or st.session_state.scaler is None:
+        st.warning("Please train models first!")
+    else:
+        st.write("Enter patient information to get a personalized heart attack risk prediction.")
+        
+        # Select model for prediction
+        model_name = st.selectbox(
+            "Select model for prediction:",
+            list(st.session_state.models.keys()),
+            index=list(st.session_state.models.keys()).index("XGBoost") if "XGBoost" in st.session_state.models else 0
+        )
+        
+        selected_model = st.session_state.models[model_name]['model']
+        
+        # Create tabs for different input methods
+        tab1, tab2 = st.tabs(["Form Input", "CSV Upload"])
+        
+        with tab1:
+            st.subheader("Enter Patient Information")
+            
+            # Create columns for better layout
+            col1, col2, col3 = st.columns(3)
+            
+            # Create dictionary to hold input values
+            input_data = {}
+            
+            # Demographic information
+            with col1:
+                st.markdown("##### Demographics")
+                input_data['Age'] = st.number_input("Age", min_value=18, max_value=120, value=50)
+                input_data['Sex'] = st.selectbox("Sex", ["Male", "Female"])
+                input_data['Race'] = st.selectbox("Race", ["White", "Black", "Asian", "Hispanic", "Other"])
+                
+            # Health metrics
+            with col2:
+                st.markdown("##### Health Metrics")
+                input_data['Cholesterol'] = st.number_input("Cholesterol (mg/dL)", min_value=100, max_value=500, value=200)
+                input_data['Blood Pressure'] = st.number_input("Systolic Blood Pressure (mmHg)", min_value=80, max_value=220, value=120)
+                input_data['Heart Rate'] = st.number_input("Heart Rate (bpm)", min_value=40, max_value=200, value=75)
+                input_data['BMI'] = st.number_input("BMI", min_value=10.0, max_value=50.0, value=24.5, step=0.1)
+                
+            # Lifestyle and conditions
+            with col3:
+                st.markdown("##### Lifestyle & Conditions")
+                input_data['Smoking'] = st.selectbox("Smoking Status", ["Never", "Former", "Current"])
+                input_data['Alcohol Consumption'] = st.selectbox("Alcohol Consumption", ["None", "Moderate", "Heavy"])
+                input_data['Exercise Hours Per Week'] = st.slider("Exercise (hours/week)", 0.0, 20.0, 3.0, 0.5)
+                input_data['Diabetes'] = st.selectbox("Diabetes", ["No", "Yes"])
+                input_data['Family History'] = st.selectbox("Family History of Heart Disease", ["No", "Yes"])
+                
+            # More health details
+            st.markdown("##### Additional Details")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                input_data['Sleep Hours'] = st.slider("Sleep (hours/day)", 3.0, 12.0, 7.0, 0.5)
+                input_data['Physical Activity Days Per Week'] = st.slider("Active Days Per Week", 0, 7, 3)
+                input_data['Medication Use'] = st.multiselect(
+                    "Medications", 
+                    ["None", "Anti-hypertensive", "Cholesterol-lowering", "Anti-diabetic", "Other"],
+                    default=["None"]
+                )
+                if "None" in input_data['Medication Use'] and len(input_data['Medication Use']) > 1:
+                    input_data['Medication Use'].remove("None")
+                input_data['Medication Use'] = ", ".join(input_data['Medication Use']) if input_data['Medication Use'] else "None"
+                
+            with col2:
+                input_data['Stress Level'] = st.slider("Stress Level (1-10)", 1, 10, 5)
+                input_data['Sedentary Hours Per Day'] = st.slider("Sedentary Hours/Day", 0.0, 24.0, 8.0, 0.5)
+                input_data['Previous Heart Problems'] = st.selectbox("Previous Heart Problems", ["No", "Yes"])
+                input_data['Diet'] = st.selectbox(
+                    "Diet Quality", 
+                    ["Poor", "Average", "Good", "Excellent"]
+                )
+            
+            # Predict button
+            if st.button("Predict Heart Attack Risk"):
+                with st.spinner("Calculating risk..."):
+                    try:
+                        # Make prediction using selected model
+                        prediction, probability, shap_values = predict_individual_risk(
+                            input_data, 
+                            selected_model,
+                            st.session_state.X.columns,
+                            st.session_state.scaler,
+                            st.session_state.explainer if model_name == "XGBoost" else None
+                        )
+                        
+                        # Display results
+                        st.subheader("Risk Assessment Results")
+                        
+                        col1, col2 = st.columns([1, 2])
+                        
+                        with col1:
+                            if prediction == 1:
+                                st.markdown("""
+                                <div style="background-color:#FF5252; padding:20px; border-radius:10px; text-align:center;">
+                                <h2 style="color:white;">HIGH RISK</h2>
+                                </div>
+                                """, unsafe_allow_html=True)
+                            else:
+                                st.markdown("""
+                                <div style="background-color:#4CAF50; padding:20px; border-radius:10px; text-align:center;">
+                                <h2 style="color:white;">LOW RISK</h2>
+                                </div>
+                                """, unsafe_allow_html=True)
+                            
+                            # Probability gauge
+                            fig, ax = plt.subplots(figsize=(4, 0.8))
+                            plt.axis('off')
+                            
+                            # Create colored background
+                            background = np.zeros((1, 100, 3))
+                            for i in range(100):
+                                if i < 25:
+                                    background[0, i] = [0, 1, 0]  # Green
+                                elif i < 50:
+                                    background[0, i] = [1, 1, 0]  # Yellow
+                                elif i < 75:
+                                    background[0, i] = [1, 0.5, 0]  # Orange
+                                else:
+                                    background[0, i] = [1, 0, 0]  # Red
+                            
+                            plt.imshow(background)
+                            
+                            # Add marker for probability
+                            marker_pos = int(probability * 100)
+                            plt.plot(marker_pos, 0, 'v', color='black', markersize=12)
+                            
+                            # Add percentage text
+                            plt.text(50, 0, f"{probability*100:.1f}%", 
+                                    fontsize=12, fontweight='bold', 
+                                    ha='center', va='center',
+                                    bbox=dict(facecolor='white', alpha=0.8))
+                            
+                            st.pyplot(fig)
+                            
+                            # Risk level description
+                            if probability < 0.25:
+                                risk_level = "Low Risk"
+                                recommendation = "Continue with healthy lifestyle."
+                            elif probability < 0.5:
+                                risk_level = "Moderate Risk"
+                                recommendation = "Consider lifestyle improvements."
+                            elif probability < 0.75:
+                                risk_level = "High Risk"
+                                recommendation = "Consult with healthcare provider soon."
+                            else:
+                                risk_level = "Very High Risk"
+                                recommendation = "Urgent medical consultation recommended!"
+                            
+                            st.metric("Risk Probability", f"{probability*100:.1f}%")
+                            st.metric("Risk Level", risk_level)
+                            st.info(f"Recommendation: {recommendation}")
+                        
+                        with col2:
+                            # Feature impact
+                            st.subheader("Feature Impact on Prediction")
+                            
+                            if shap_values is not None:
+                                # Create waterfall plot
+                                fig, ax = plt.subplots(figsize=(10, 8))
+                                shap.waterfall_plot(shap_values[0], max_display=10, show=False)
+                                plt.title("Top Factors Influencing Risk Prediction")
+                                plt.tight_layout()
+                                st.pyplot(fig)
+                                
+                                st.markdown("""
+                                <div class='info-box'>
+                                <p><strong>How to interpret:</strong> Red bars increase risk, blue bars decrease risk. 
+                                The length of each bar shows the magnitude of impact.</p>
+                                </div>
+                                """, unsafe_allow_html=True)
+                            else:
+                                st.info("Detailed feature impact analysis not available for this model.")
+                        
+                        # Personalized recommendations
+                        st.subheader("Personalized Recommendations")
+                        
+                        # Define risk factors and recommendations
+                        modifiable_factors = {
+                            'Cholesterol': {
+                                'high': {'threshold': 200, 'recommendation': "Consider dietary changes to reduce cholesterol and speak with a healthcare provider about medication options if appropriate."},
+                                'normal': {'recommendation': "Maintain healthy cholesterol levels through a balanced diet."}
+                            },
+                            'Blood Pressure': {
+                                'high': {'threshold': 130, 'recommendation': "Monitor blood pressure regularly. Consider the DASH diet, reducing sodium, regular exercise, and stress management."},
+                                'normal': {'recommendation': "Continue maintaining healthy blood pressure with regular monitoring."}
+                            },
+                            'BMI': {
+                                'high': {'threshold': 25, 'recommendation': "Focus on achieving a healthier weight through balanced nutrition and regular physical activity."},
+                                'normal': {'recommendation': "Maintain healthy weight through continued balanced diet and regular exercise."}
+                            },
+                            'Smoking': {
+                                'risk': {'values': ['Current'], 'recommendation': "Quitting smoking is one of the most important steps to reduce heart attack risk. Consider cessation programs or speak with a healthcare provider about support options."},
+                                'former': {'values': ['Former'], 'recommendation': "Great job quitting smoking! Your risk continues to decrease the longer you remain smoke-free."},
+                                'none': {'recommendation': "Continue to avoid smoking to maintain your lower risk profile."}
+                            },
+                            'Exercise Hours Per Week': {
+                                'low': {'threshold': 2.5, 'comparison': '<', 'recommendation': "Aim for at least 150 minutes (2.5 hours) of moderate exercise per week, as recommended by health guidelines."},
+                                'normal': {'recommendation': "Great job staying active! Continue your regular exercise routine."}
+                            },
+                            'Sleep Hours': {
+                                'poor': {'threshold_low': 7, 'threshold_high': 9, 'comparison': 'outside', 'recommendation': "Try to achieve 7-9 hours of quality sleep per night for optimal heart health."},
+                                'good': {'recommendation': "Continue maintaining healthy sleep habits."}
+                            },
+                            'Stress Level': {
+                                'high': {'threshold': 7, 'recommendation': "Consider stress management techniques such as mindfulness, meditation, or speaking with a mental health professional."},
+                                'normal': {'recommendation': "Continue practicing stress management for heart health."}
+                            }
+                        }
+                        
+                        recommendations = []
+                        
+                        # Generate personalized recommendations based on input data
+                        for factor, conditions in modifiable_factors.items():
+                            if factor in input_data:
+                                value = input_data[factor]
+                                
+                                # Handle different types of comparisons
+                                if 'high' in conditions and 'threshold' in conditions['high']:
+                                    threshold = conditions['high']['threshold']
+                                    comparison = conditions['high'].get('comparison', '>')
+                                    
+                                    if comparison == '>' and value > threshold:
+                                        recommendations.append(f"**{factor}**: {conditions['high']['recommendation']}")
+                                    elif comparison == '<' and value < threshold:
+                                        recommendations.append(f"**{factor}**: {conditions['low']['recommendation']}")
+                                    elif comparison == 'outside' and (value < conditions['poor']['threshold_low'] or value > conditions['poor']['threshold_high']):
+                                        recommendations.append(f"**{factor}**: {conditions['poor']['recommendation']}")
+                                    else:
+                                        if 'normal' in conditions:
+                                            recommendations.append(f"**{factor}**: {conditions['normal']['recommendation']}")
+                                
+                                # Handle categorical variables
+                                elif 'risk' in conditions and 'values' in conditions['risk']:
+                                    if value in conditions['risk']['values']:
+                                        recommendations.append(f"**{factor}**: {conditions['risk']['recommendation']}")
+                                    elif 'former' in conditions and value in conditions['former'].get('values', []):
+                                        recommendations.append(f"**{factor}**: {conditions['former']['recommendation']}")
+                                    else:
+                                        if 'none' in conditions:
+                                            recommendations.append(f"**{factor}**: {conditions['none']['recommendation']}")
+                        
+                        # Display recommendations
+                        for rec in recommendations:
+                            st.write(rec)
+                        
+                        # Add disclaimer
+                        st.markdown("""
+                        <div class='info-box' style='margin-top: 20px;'>
+                        <p><strong>Disclaimer:</strong> This prediction is for informational purposes only and should not 
+                        replace professional medical advice. Always consult with a healthcare provider for proper diagnosis 
+                        and treatment recommendations.</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
+                    except Exception as e:
+                        st.error(f"Error making prediction: {e}")
+                        st.error("Make sure all required features are provided and in the correct format.")
+        
+        with tab2:
+            st.subheader("Upload Patient Data CSV")
+            st.write("Upload a CSV file with multiple patient records for batch prediction.")
+            
+            uploaded_csv = st.file_uploader("Upload CSV", type=["csv"])
+            
+            if uploaded_csv is not None:
+                try:
+                    patients_df = pd.read_csv(uploaded_csv)
+                    st.write("Preview of uploaded data:")
+                    st.write(patients_df.head())
+                    
+                    if st.button("Generate Batch Predictions"):
+                        with st.spinner("Processing batch predictions..."):
+                            # Preprocess the data similar to training data
+                            patients_df_processed = preprocess_data(patients_df)
+                            
+                            # Ensure columns match training data
+                            for col in st.session_state.X.columns:
+                                if col not in patients_df_processed.columns:
+                                    patients_df_processed[col] = 0
+                            
+                            # Select only columns used in training
+                            patients_df_final = patients_df_processed[st.session_state.X.columns]
+                            
+                            # Scale the data
+                            patients_scaled = st.session_state.scaler.transform(patients_df_final)
+                            
+                            # Make predictions
+                            predictions = selected_model.predict(patients_scaled)
+                            probabilities = selected_model.predict_proba(patients_scaled)[:, 1]
+                            
+                            # Add predictions to original data
+                            patients_df['Risk Prediction'] = predictions
+                            patients_df['Risk Probability'] = probabilities
+                            
+                            # Display results
+                            st.subheader("Batch Prediction Results")
+                            st.write(patients_df)
+                            
+                            # Download results
+                            csv = patients_df.to_csv(index=False)
+                            b64 = base64.b64encode(csv.encode()).decode()
+                            href = f'<a href="data:file/csv;base64,{b64}" download="heart_risk_predictions.csv">Download Predictions CSV</a>'
+                            st.markdown(href, unsafe_allow_html=True)
+                            
+                            # Summary statistics
+                            high_risk_count = sum(predictions == 1)
+                            high_risk_percentage = (high_risk_count / len(predictions)) * 100
+                            
+                            st.subheader("Batch Summary")
+                            
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.metric("Total Patients", len(predictions))
+                                st.metric("High Risk Patients", high_risk_count)
+                            with col2:
+                                st.metric("High Risk Percentage", f"{high_risk_percentage:.1f}%")
+                                avg_prob = np.mean(probabilities) * 100
+                                st.metric("Average Risk Probability", f"{avg_prob:.1f}%")
+                            
+                            # Distribution of risk probabilities
+                            fig, ax = plt.subplots(figsize=(10, 6))
+                            sns.histplot(probabilities, bins=20, kde=True, ax=ax)
+                            plt.title("Distribution of Risk Probabilities")
+                            plt.xlabel("Risk Probability")
+                            plt.ylabel("Count")
+                            st.pyplot(fig)
+                    
+                except Exception as e:
+                    st.error(f"Error processing CSV file: {e}")
+                    st.error("Please ensure your CSV has the required features in the correct format.")
 
 # Footer
 st.markdown("""
-<div style="text-align: center; margin-top: 40px; padding: 20px; background-color: #F0F2F6; border-radius: 5px;">
-<p>Heart Attack Risk Prediction App | Created with ❤️ and Streamlit</p>
+<div style="text-align: center; margin-top: 30px; padding: 20px; background-color: #F0F2F6; border-radius: 5px;">
+<p>Created with ❤️ for healthcare professionals and patients</p>
+<p>This application is for educational and informational purposes only.</p>
+<p>Always consult with healthcare professionals for medical advice.</p>
 </div>
 """, unsafe_allow_html=True)
