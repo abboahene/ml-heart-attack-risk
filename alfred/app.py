@@ -638,18 +638,23 @@ elif app_mode == "Risk Prediction":
                         st.subheader("Risk Factor Analysis")
                         st.write("The chart below shows how each factor contributes to the prediction:")
                         
-                        # Using matplotlib to display SHAP values
+                        # Using matplotlib to display SHAP values with feature names
                         fig, ax = plt.subplots(figsize=(10, 6))
                         shap.plots.waterfall(shap_values[0], max_display=10, show=False)
+                        plt.tight_layout()
                         st.pyplot(fig)
                         
-                        # Actionable insights
+                        # Actionable insights based on actual feature names
                         st.subheader("Personalized Recommendations")
                         
                         # Get most influential modifiable factors
-                        feature_values = pd.Series(shap_values[0].values, index=st.session_state.X.columns)
+                        feature_importances = pd.DataFrame({
+                            'Feature': st.session_state.X.columns,
+                            'SHAP_value': shap_values[0].values
+                        })
+                        feature_importances = feature_importances.sort_values('SHAP_value', ascending=False)
                         
-                        # Define modifiable factors
+                        # Define modifiable factors with proper naming
                         modifiable_factors = [
                             'Cholesterol', 'Blood Pressure', 'BMI', 'Smoking', 
                             'Physical Activity', 'Sleep Hours', 'Stress Level'
@@ -658,10 +663,10 @@ elif app_mode == "Risk Prediction":
                         # Find modifiable factors that contribute to risk
                         risky_factors = []
                         for factor in modifiable_factors:
-                            matching_columns = [col for col in feature_values.index if factor in col]
-                            for col in matching_columns:
-                                if feature_values[col] > 0:  # Contributes to higher risk
-                                    risky_factors.append((col, feature_values[col]))
+                            matching_features = feature_importances[feature_importances['Feature'].str.contains(factor)]
+                            for _, row in matching_features.iterrows():
+                                if row['SHAP_value'] > 0:  # Contributes to higher risk
+                                    risky_factors.append((row['Feature'], row['SHAP_value']))
                         
                         # Sort by importance
                         risky_factors.sort(key=lambda x: x[1], reverse=True)
@@ -669,16 +674,27 @@ elif app_mode == "Risk Prediction":
                         if risky_factors:
                             st.markdown("<h4 style='color: #1E88E5;'>Focus Areas for Risk Reduction:</h4>", unsafe_allow_html=True)
                             for factor, value in risky_factors[:3]:
-                                st.markdown(f"- **{factor}**: Significant impact on risk prediction")
+                                factor_name = factor.replace('_', ' ').title()  # Format for better readability
+                                st.markdown(f"- **{factor_name}**: Significant impact on risk prediction (SHAP value: {value:.4f})")
                             
-                            # Generic recommendations
-                            st.markdown("""
-                            ### General Recommendations:
-                            - Consult with a healthcare provider for personalized medical advice
-                            - Consider regular cardiovascular screenings
-                            - Maintain a heart-healthy diet and regular physical activity
-                            - Follow medication regimens as prescribed by your doctor
-                            """)
+                            # Generate specific recommendations based on top factors
+                            st.markdown("### Recommended Actions:")
+                            for factor, _ in risky_factors[:3]:
+                                factor_lower = factor.lower()
+                                if 'cholesterol' in factor_lower:
+                                    st.markdown("- Consider dietary changes to lower cholesterol (reduce saturated fats, increase fiber)")
+                                elif 'blood pressure' in factor_lower:
+                                    st.markdown("- Monitor blood pressure regularly and consider lifestyle modifications to reduce it")
+                                elif 'bmi' in factor_lower:
+                                    st.markdown("- Work with healthcare provider on a weight management plan if BMI is elevated")
+                                elif 'smoking' in factor_lower:
+                                    st.markdown("- Seek smoking cessation support if currently smoking")
+                                elif 'physical activity' in factor_lower:
+                                    st.markdown("- Increase physical activity to at least 150 minutes of moderate activity per week")
+                                elif 'sleep' in factor_lower:
+                                    st.markdown("- Improve sleep habits and aim for 7-9 hours of quality sleep per night")
+                                elif 'stress' in factor_lower:
+                                    st.markdown("- Implement stress reduction techniques such as meditation or mindfulness")
                         else:
                             st.write("No significant modifiable risk factors identified.")
                     
