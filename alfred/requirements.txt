@@ -4,6 +4,7 @@ numpy
 matplotlib
 seaborn
 scikit-learn
-xgboost
-shap
 imbalanced-learn
+xgboost
+lightgbm
+shap
