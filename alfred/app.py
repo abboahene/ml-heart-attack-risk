@@ -16,6 +16,10 @@ import shap
 import base64
 from io import BytesIO
 import time
+import warnings
+
+# Suppress warnings
+warnings.filterwarnings('ignore')
 
 # Set page configuration
 st.set_page_config(
@@ -46,6 +50,10 @@ st.markdown("""
         display: flex;
         justify-content: space-between;
     }
+    .shap-value {
+        font-weight: bold;
+        color: #FF4B4B;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -66,10 +74,25 @@ st.sidebar.title("Controls")
 @st.cache_data
 def load_sample_data():
     try:
-        df = pd.read_csv("sample_data.csv")
+        # Sample data with realistic heart attack risk features
+        data = {
+            'Age': np.random.randint(30, 80, 1000),
+            'Sex': np.random.choice(['Male', 'Female'], 1000),
+            'Cholesterol': np.random.randint(150, 300, 1000),
+            'Blood_Pressure': np.random.randint(90, 180, 1000),
+            'Heart_Rate': np.random.randint(60, 100, 1000),
+            'BMI': np.round(np.random.uniform(18, 35, 1000), 1),
+            'Smoking': np.random.choice(['Never', 'Former', 'Current'], 1000),
+            'Diabetes': np.random.choice(['No', 'Yes'], 1000),
+            'Family_History': np.random.choice(['No', 'Yes'], 1000),
+            'Exercise_Hours': np.round(np.random.uniform(0, 10, 1000), 1),
+            'Stress_Level': np.random.randint(1, 10, 1000),
+            'Heart_Attack_Risk': np.random.choice([0, 1], 1000, p=[0.7, 0.3])
+        }
+        df = pd.DataFrame(data)
         return df
-    except FileNotFoundError:
-        st.error("Sample dataset not found. Please upload your own data.")
+    except Exception as e:
+        st.error(f"Error generating sample data: {e}")
         return None
 
 def preprocess_data(df):
@@ -110,62 +133,81 @@ def train_models(X, y):
     
     # Train models
     models = {}
+    training_times = {}
     
+    # XGBoost
     with st.spinner('Training XGBoost model...'):
+        start_time = time.time()
         xgb = XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=42)
         xgb.fit(X_train_scaled, y_train)
+        training_times['XGBoost'] = time.time() - start_time
         models['XGBoost'] = {
             'model': xgb,
             'predictions': xgb.predict(X_test_scaled),
             'probabilities': xgb.predict_proba(X_test_scaled)[:, 1]
         }
     
+    # Random Forest
     with st.spinner('Training Random Forest model...'):
+        start_time = time.time()
         rf = RandomForestClassifier(random_state=42)
         rf.fit(X_train_scaled, y_train)
+        training_times['Random Forest'] = time.time() - start_time
         models['Random Forest'] = {
             'model': rf,
             'predictions': rf.predict(X_test_scaled),
             'probabilities': rf.predict_proba(X_test_scaled)[:, 1]
         }
     
+    # Logistic Regression
     with st.spinner('Training Logistic Regression model...'):
+        start_time = time.time()
         lr = LogisticRegression(random_state=42, max_iter=1000)
         lr.fit(X_train_scaled, y_train)
+        training_times['Logistic Regression'] = time.time() - start_time
         models['Logistic Regression'] = {
             'model': lr,
             'predictions': lr.predict(X_test_scaled),
             'probabilities': lr.predict_proba(X_test_scaled)[:, 1]
         }
     
+    # SVM
     with st.spinner('Training Support Vector Machine model...'):
+        start_time = time.time()
         svm = SVC(random_state=42, probability=True)
         svm.fit(X_train_scaled, y_train)
+        training_times['SVM'] = time.time() - start_time
         models['SVM'] = {
             'model': svm,
             'predictions': svm.predict(X_test_scaled),
             'probabilities': svm.predict_proba(X_test_scaled)[:, 1]
         }
     
+    # Gradient Boosting
     with st.spinner('Training Gradient Boosting model...'):
+        start_time = time.time()
         gb = GradientBoostingClassifier(random_state=42)
         gb.fit(X_train_scaled, y_train)
+        training_times['Gradient Boosting'] = time.time() - start_time
         models['Gradient Boosting'] = {
             'model': gb,
             'predictions': gb.predict(X_test_scaled),
             'probabilities': gb.predict_proba(X_test_scaled)[:, 1]
         }
     
+    # Neural Network
     with st.spinner('Training Neural Network model...'):
+        start_time = time.time()
         nn = MLPClassifier(hidden_layer_sizes=(100, 50), max_iter=500, random_state=42)
         nn.fit(X_train_scaled, y_train)
+        training_times['Neural Network'] = time.time() - start_time
         models['Neural Network'] = {
             'model': nn,
             'predictions': nn.predict(X_test_scaled),
             'probabilities': nn.predict_proba(X_test_scaled)[:, 1]
         }
     
-    return models, X_train, X_test, y_train, y_test, scaler, X_train_scaled, X_test_scaled
+    return models, X_train, X_test, y_train, y_test, scaler, X_train_scaled, X_test_scaled, training_times
 
 def plot_confusion_matrix(y_true, y_pred, title):
     fig, ax = plt.subplots(figsize=(6, 5))
@@ -252,18 +294,16 @@ def clinical_feature_analysis(model, feature_names):
     
     # Define modifiability categories
     modifiable = [
-        'Cholesterol', 'Blood Pressure', 'BMI', 'Diet', 'Exercise', 
-        'Smoking', 'Alcohol', 'Physical Activity', 'Stress Level',
-        'Sedentary Hours', 'Sleep Hours'
+        'Cholesterol', 'Blood_Pressure', 'BMI', 'Exercise_Hours', 
+        'Smoking', 'Stress_Level', 'Sedentary'
     ]
     
     semi_modifiable = [
-        'Medication Use', 'Obesity', 'Heart Rate', 'Triglycerides'
+        'Medication', 'Heart_Rate'
     ]
     
     non_modifiable = [
-        'Age', 'Sex', 'Family History', 'Previous Heart Problems', 
-        'Diabetes', 'Income'
+        'Age', 'Sex', 'Family_History', 'Diabetes'
     ]
     
     # Categorize each feature
@@ -339,9 +379,10 @@ def predict_individual_risk(input_data, model, X_columns, scaler, explainer=None
     # Create SHAP explanation if explainer exists
     if explainer is not None:
         try:
-            shap_values = explainer(df_input_scaled)
+            shap_values = explainer.shap_values(df_input_scaled)
             return prediction, proba, shap_values
-        except:
+        except Exception as e:
+            st.error(f"Error generating SHAP explanation: {str(e)}")
             return prediction, proba, None
     
     return prediction, proba, None
@@ -367,6 +408,8 @@ if 'explainer' not in st.session_state:
     st.session_state.explainer = None
 if 'feature_names' not in st.session_state:
     st.session_state.feature_names = None
+if 'training_times' not in st.session_state:
+    st.session_state.training_times = None
 
 # Home page
 if app_mode == "Home":
@@ -413,9 +456,12 @@ if app_mode == "Home":
     if data_source == "Upload your own data":
         uploaded_file = st.file_uploader("Upload CSV file", type=["csv"])
         if uploaded_file is not None:
-            df = pd.read_csv(uploaded_file)
-            st.session_state.data = df
-            st.success("Data successfully loaded!")
+            try:
+                df = pd.read_csv(uploaded_file)
+                st.session_state.data = df
+                st.success("Data successfully loaded!")
+            except Exception as e:
+                st.error(f"Error loading file: {str(e)}")
     else:
         sample_data = load_sample_data()
         if sample_data is not None:
@@ -473,8 +519,13 @@ elif app_mode == "Data Exploration":
         # Target variable distribution
         st.subheader("Target Variable Distribution")
         
-        target_options = ["Heart Attack Risk (Binary)", "Heart Attack Risk (Text)", "Heart Attack Risk"]
-        target_col = next((col for col in target_options if col in df.columns), None)
+        # Try to find target column
+        target_col = None
+        possible_targets = ['Heart_Attack_Risk', 'HeartAttackRisk', 'Risk', 'target']
+        for col in possible_targets:
+            if col in df.columns:
+                target_col = col
+                break
         
         if target_col:
             fig, ax = plt.subplots(figsize=(8, 6))
@@ -483,8 +534,12 @@ elif app_mode == "Data Exploration":
             ax.axis('equal')
             plt.title(f"Distribution of {target_col}")
             st.pyplot(fig)
+            
+            # Check if binary
+            if df[target_col].nunique() != 2:
+                st.warning("Target variable has more than 2 unique values. Please ensure it's binary (0/1) for classification.")
         else:
-            st.warning("No recognized target column found in the dataset.")
+            st.warning("No recognized target column found in the dataset. Please ensure your data has a target variable.")
         
         # Correlation heatmap
         st.subheader("Feature Correlations")
@@ -500,32 +555,18 @@ elif app_mode == "Data Exploration":
                 st.error(f"Error generating correlation heatmap: {e}")
         
         # Prepare for modeling
-        if target_col:
-            # Check if binary target exists
-            binary_target = None
-            if "Heart Attack Risk (Binary)" in df.columns:
-                binary_target = "Heart Attack Risk (Binary)"
-            elif "Heart Attack Risk" in df.columns and df["Heart Attack Risk"].nunique() == 2:
-                binary_target = "Heart Attack Risk"
+        if target_col and df[target_col].nunique() == 2:
+            # Store for modeling
+            X = df_processed.drop(columns=[target_col])
+            y = df_processed[target_col]
             
-            if binary_target:
-                # Store for modeling
-                if "Heart Attack Risk (Text)" in df.columns:
-                    X = df_processed.drop(columns=[binary_target, "Heart Attack Risk (Text)"])
-                else:
-                    X = df_processed.drop(columns=[binary_target])
-                    
-                y = df_processed[binary_target]
-                
-                st.session_state.X = X
-                st.session_state.y = y
-                st.session_state.feature_names = X.columns
-                
-                st.success("Data is ready for modeling! Navigate to 'Model Training' to continue.")
-            else:
-                st.warning("Could not identify binary target variable for modeling.")
+            st.session_state.X = X
+            st.session_state.y = y
+            st.session_state.feature_names = X.columns
+            
+            st.success("Data is ready for modeling! Navigate to 'Model Training' to continue.")
         else:
-            st.warning("Target variable not found. Please ensure your dataset contains a heart attack risk column.")
+            st.warning("Could not identify binary target variable for modeling.")
 
 # Model Training page
 elif app_mode == "Model Training":
@@ -539,10 +580,9 @@ elif app_mode == "Model Training":
             with st.spinner("Training models... This may take a few minutes."):
                 try:
                     start_time = time.time()
-                    models, X_train, X_test, y_train, y_test, scaler, X_train_scaled, X_test_scaled = train_models(
+                    models, X_train, X_test, y_train, y_test, scaler, X_train_scaled, X_test_scaled, training_times = train_models(
                         st.session_state.X, st.session_state.y
                     )
-                    training_time = time.time() - start_time
                     
                     # Store in session state
                     st.session_state.models = models
@@ -551,11 +591,16 @@ elif app_mode == "Model Training":
                     st.session_state.y_test = y_test
                     st.session_state.X_train_scaled = X_train_scaled
                     st.session_state.X_test_scaled = X_test_scaled
+                    st.session_state.training_times = training_times
                     
                     # Create SHAP explainer for XGBoost
-                    st.session_state.explainer = shap.Explainer(models['XGBoost']['model'], X_train_scaled)
+                    try:
+                        st.session_state.explainer = shap.TreeExplainer(models['XGBoost']['model'])
+                    except Exception as e:
+                        st.error(f"Could not create SHAP explainer: {str(e)}")
+                        st.session_state.explainer = None
                     
-                    st.success(f"Models trained successfully in {training_time:.2f} seconds!")
+                    st.success(f"Models trained successfully in {sum(training_times.values()):.2f} seconds!")
                 except Exception as e:
                     st.error(f"Error training models: {e}")
         
@@ -714,12 +759,12 @@ elif app_mode == "Model Comparison":
         st.pyplot(pr_fig)
         
         # Training time comparison if available
-        if 'training_times' in st.session_state:
+        if st.session_state.training_times:
             st.subheader("Training Time Comparison")
-            times_df = pd.DataFrame(st.session_state.training_times)
+            times_df = pd.DataFrame.from_dict(st.session_state.training_times, orient='index', columns=['Time (s)'])
+            times_df = times_df.reset_index().rename(columns={'index': 'Model'})
             
             fig, ax = plt.subplots(figsize=(10, 6))
-            ax.barh(times_df['Model'], times_df)
             sns.barplot(x='Time (s)', y='Model', data=times_df, palette='viridis', ax=ax)
             plt.title('Model Training Time Comparison')
             plt.xlabel('Time (seconds)')
@@ -748,19 +793,18 @@ elif app_mode == "Model Comparison":
         if st.button("Generate SHAP Analysis (may take a minute)"):
             with st.spinner("Generating SHAP values..."):
                 try:
-                    # Create explainer for the best model
-                    best_model = st.session_state.models[best_model_name]['model']
-                    
                     # Use a sample of the test data for computation efficiency
                     sample_size = min(100, len(st.session_state.X_test_scaled))
                     X_sample = st.session_state.X_test_scaled[:sample_size]
                     
-                    if best_model_name == 'XGBoost':
+                    if best_model_name == 'XGBoost' and st.session_state.explainer is not None:
                         explainer = st.session_state.explainer
+                        shap_values = explainer.shap_values(X_sample)
                     else:
+                        # Create explainer for the best model
+                        best_model = st.session_state.models[best_model_name]['model']
                         explainer = shap.Explainer(best_model, st.session_state.X_train_scaled)
-                    
-                    shap_values = explainer(X_sample)
+                        shap_values = explainer.shap_values(X_sample)
                     
                     # Create and display SHAP summary plot
                     fig, ax = plt.subplots(figsize=(10, 8))
@@ -815,61 +859,38 @@ elif app_mode == "Risk Prediction":
                 st.markdown("##### Demographics")
                 input_data['Age'] = st.number_input("Age", min_value=18, max_value=120, value=50)
                 input_data['Sex'] = st.selectbox("Sex", ["Male", "Female"])
-                input_data['Race'] = st.selectbox("Race", ["White", "Black", "Asian", "Hispanic", "Other"])
                 
             # Health metrics
             with col2:
                 st.markdown("##### Health Metrics")
                 input_data['Cholesterol'] = st.number_input("Cholesterol (mg/dL)", min_value=100, max_value=500, value=200)
-                input_data['Blood Pressure'] = st.number_input("Systolic Blood Pressure (mmHg)", min_value=80, max_value=220, value=120)
-                input_data['Heart Rate'] = st.number_input("Heart Rate (bpm)", min_value=40, max_value=200, value=75)
+                input_data['Blood_Pressure'] = st.number_input("Systolic Blood Pressure (mmHg)", min_value=80, max_value=220, value=120)
+                input_data['Heart_Rate'] = st.number_input("Heart Rate (bpm)", min_value=40, max_value=200, value=75)
                 input_data['BMI'] = st.number_input("BMI", min_value=10.0, max_value=50.0, value=24.5, step=0.1)
                 
             # Lifestyle and conditions
             with col3:
                 st.markdown("##### Lifestyle & Conditions")
                 input_data['Smoking'] = st.selectbox("Smoking Status", ["Never", "Former", "Current"])
-                input_data['Alcohol Consumption'] = st.selectbox("Alcohol Consumption", ["None", "Moderate", "Heavy"])
-                input_data['Exercise Hours Per Week'] = st.slider("Exercise (hours/week)", 0.0, 20.0, 3.0, 0.5)
                 input_data['Diabetes'] = st.selectbox("Diabetes", ["No", "Yes"])
-                input_data['Family History'] = st.selectbox("Family History of Heart Disease", ["No", "Yes"])
-                
-            # More health details
-            st.markdown("##### Additional Details")
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                input_data['Sleep Hours'] = st.slider("Sleep (hours/day)", 3.0, 12.0, 7.0, 0.5)
-                input_data['Physical Activity Days Per Week'] = st.slider("Active Days Per Week", 0, 7, 3)
-                input_data['Medication Use'] = st.multiselect(
-                    "Medications", 
-                    ["None", "Anti-hypertensive", "Cholesterol-lowering", "Anti-diabetic", "Other"],
-                    default=["None"]
-                )
-                if "None" in input_data['Medication Use'] and len(input_data['Medication Use']) > 1:
-                    input_data['Medication Use'].remove("None")
-                input_data['Medication Use'] = ", ".join(input_data['Medication Use']) if input_data['Medication Use'] else "None"
-                
-            with col2:
-                input_data['Stress Level'] = st.slider("Stress Level (1-10)", 1, 10, 5)
-                input_data['Sedentary Hours Per Day'] = st.slider("Sedentary Hours/Day", 0.0, 24.0, 8.0, 0.5)
-                input_data['Previous Heart Problems'] = st.selectbox("Previous Heart Problems", ["No", "Yes"])
-                input_data['Diet'] = st.selectbox(
-                    "Diet Quality", 
-                    ["Poor", "Average", "Good", "Excellent"]
-                )
+                input_data['Family_History'] = st.selectbox("Family History of Heart Disease", ["No", "Yes"])
+                input_data['Exercise_Hours'] = st.slider("Exercise (hours/week)", 0.0, 20.0, 3.0, 0.5)
+                input_data['Stress_Level'] = st.slider("Stress Level (1-10)", 1, 10, 5)
             
             # Predict button
             if st.button("Predict Heart Attack Risk"):
                 with st.spinner("Calculating risk..."):
                     try:
+                        # Get explainer if available (only for XGBoost in this case)
+                        explainer = st.session_state.explainer if model_name == "XGBoost" else None
+                        
                         # Make prediction using selected model
                         prediction, probability, shap_values = predict_individual_risk(
                             input_data, 
                             selected_model,
                             st.session_state.X.columns,
                             st.session_state.scaler,
-                            st.session_state.explainer if model_name == "XGBoost" else None
+                            explainer
                         )
                         
                         # Display results
@@ -946,7 +967,11 @@ elif app_mode == "Risk Prediction":
                             if shap_values is not None:
                                 # Create waterfall plot
                                 fig, ax = plt.subplots(figsize=(10, 8))
-                                shap.waterfall_plot(shap_values[0], max_display=10, show=False)
+                                shap.waterfall_plot(shap.Explanation(
+                                    values=shap_values[0],
+                                    base_values=explainer.expected_value,
+                                    feature_names=st.session_state.feature_names
+                                ), max_display=10, show=False)
                                 plt.title("Top Factors Influencing Risk Prediction")
                                 plt.tight_layout()
                                 st.pyplot(fig)
@@ -969,7 +994,7 @@ elif app_mode == "Risk Prediction":
                                 'high': {'threshold': 200, 'recommendation': "Consider dietary changes to reduce cholesterol and speak with a healthcare provider about medication options if appropriate."},
                                 'normal': {'recommendation': "Maintain healthy cholesterol levels through a balanced diet."}
                             },
-                            'Blood Pressure': {
+                            'Blood_Pressure': {
                                 'high': {'threshold': 130, 'recommendation': "Monitor blood pressure regularly. Consider the DASH diet, reducing sodium, regular exercise, and stress management."},
                                 'normal': {'recommendation': "Continue maintaining healthy blood pressure with regular monitoring."}
                             },
@@ -982,15 +1007,11 @@ elif app_mode == "Risk Prediction":
                                 'former': {'values': ['Former'], 'recommendation': "Great job quitting smoking! Your risk continues to decrease the longer you remain smoke-free."},
                                 'none': {'recommendation': "Continue to avoid smoking to maintain your lower risk profile."}
                             },
-                            'Exercise Hours Per Week': {
+                            'Exercise_Hours': {
                                 'low': {'threshold': 2.5, 'comparison': '<', 'recommendation': "Aim for at least 150 minutes (2.5 hours) of moderate exercise per week, as recommended by health guidelines."},
                                 'normal': {'recommendation': "Great job staying active! Continue your regular exercise routine."}
                             },
-                            'Sleep Hours': {
-                                'poor': {'threshold_low': 7, 'threshold_high': 9, 'comparison': 'outside', 'recommendation': "Try to achieve 7-9 hours of quality sleep per night for optimal heart health."},
-                                'good': {'recommendation': "Continue maintaining healthy sleep habits."}
-                            },
-                            'Stress Level': {
+                            'Stress_Level': {
                                 'high': {'threshold': 7, 'recommendation': "Consider stress management techniques such as mindfulness, meditation, or speaking with a mental health professional."},
                                 'normal': {'recommendation': "Continue practicing stress management for heart health."}
                             }
@@ -1009,24 +1030,24 @@ elif app_mode == "Risk Prediction":
                                     comparison = conditions['high'].get('comparison', '>')
                                     
                                     if comparison == '>' and value > threshold:
-                                        recommendations.append(f"**{factor}**: {conditions['high']['recommendation']}")
+                                        recommendations.append(f"**{factor.replace('_', ' ')}**: {conditions['high']['recommendation']}")
                                     elif comparison == '<' and value < threshold:
-                                        recommendations.append(f"**{factor}**: {conditions['low']['recommendation']}")
+                                        recommendations.append(f"**{factor.replace('_', ' ')}**: {conditions['low']['recommendation']}")
                                     elif comparison == 'outside' and (value < conditions['poor']['threshold_low'] or value > conditions['poor']['threshold_high']):
-                                        recommendations.append(f"**{factor}**: {conditions['poor']['recommendation']}")
+                                        recommendations.append(f"**{factor.replace('_', ' ')}**: {conditions['poor']['recommendation']}")
                                     else:
                                         if 'normal' in conditions:
-                                            recommendations.append(f"**{factor}**: {conditions['normal']['recommendation']}")
+                                            recommendations.append(f"**{factor.replace('_', ' ')}**: {conditions['normal']['recommendation']}")
                                 
                                 # Handle categorical variables
                                 elif 'risk' in conditions and 'values' in conditions['risk']:
                                     if value in conditions['risk']['values']:
-                                        recommendations.append(f"**{factor}**: {conditions['risk']['recommendation']}")
+                                        recommendations.append(f"**{factor.replace('_', ' ')}**: {conditions['risk']['recommendation']}")
                                     elif 'former' in conditions and value in conditions['former'].get('values', []):
-                                        recommendations.append(f"**{factor}**: {conditions['former']['recommendation']}")
+                                        recommendations.append(f"**{factor.replace('_', ' ')}**: {conditions['former']['recommendation']}")
                                     else:
                                         if 'none' in conditions:
-                                            recommendations.append(f"**{factor}**: {conditions['none']['recommendation']}")
+                                            recommendations.append(f"**{factor.replace('_', ' ')}**: {conditions['none']['recommendation']}")
                         
                         # Display recommendations
                         for rec in recommendations:
