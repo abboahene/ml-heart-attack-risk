@@ -895,103 +895,105 @@ elif app_mode == "Model Training":
             st.markdown("<h3 class='sub-header'>Individual Model Evaluation</h3>", unsafe_allow_html=True)
 
             model_names = list(st.session_state.models.keys())
-            if not model_names:
-                 st.warning("No models were trained successfully.")
-                 return # Exit this block if no models
 
-            selected_model = st.selectbox(
-                "Select model to view detailed results:",
-                model_names,
-                key="model_select_eval"
-            )
-
-            model_data = st.session_state.models.get(selected_model)
-            model_eval = st.session_state.model_results.get(selected_model)
-
-            if model_data and model_eval and model_eval.get('predictions') is not None:
-                st.markdown(f"#### Results for: {selected_model}")
-
-                # Display metrics
-                col1, col2 = st.columns(2)
-
-                with col1:
-                    st.subheader("Performance Metrics")
-                    accuracy = accuracy_score(st.session_state.y_test, model_eval['predictions'])
-                    st.metric("Accuracy", f"{accuracy:.4f}")
-
-                    st.text("Classification Report:")
-                    try:
-                        report = classification_report(st.session_state.y_test, model_eval['predictions'], output_dict=True, zero_division=0)
-                        report_df = pd.DataFrame(report).transpose()
-                        st.dataframe(report_df.style.format("{:.3f}")) # Format report
-                    except Exception as e:
-                         st.error(f"Error generating classification report: {e}")
-
-                with col2:
-                    # Confusion matrix
-                    st.subheader("Confusion Matrix")
-                    cm_fig = plot_confusion_matrix_func(st.session_state.y_test, model_eval['predictions'], selected_model)
-                    st.pyplot(cm_fig)
-                    plt.close(cm_fig) # Close the figure
-
-                # Feature importance
-                st.subheader("Feature Importance")
-                importance_fig = plot_feature_importance(
-                    model_data['model'],
-                    st.session_state.training_columns, # Use the stored feature names
-                    selected_model
+            if not model_names: # Check if the list is empty
+                 st.warning("⚠️ No models were trained successfully.")
+                 # If the list is empty, the code below this 'if' block will be skipped naturally.
+                 # No 'return' is needed here.
+            else: # Proceed only if model_names is NOT empty
+                selected_model = st.selectbox(
+                    "Select model to view detailed results:",
+                    model_names,
+                    key="model_select_eval"
                 )
-                if importance_fig:
-                    st.pyplot(importance_fig)
-                    plt.close(importance_fig) # Close the figure
 
-                # Clinical context analysis
-                st.subheader("Clinical Context Analysis")
-                try:
-                    feature_df, clinical_fig1, clinical_fig2, actionability_score = clinical_feature_analysis(
+                model_data = st.session_state.models.get(selected_model)
+                model_eval = st.session_state.model_results.get(selected_model)
+
+                if model_data and model_eval and model_eval.get('predictions') is not None:
+                    st.markdown(f"#### Results for: {selected_model}")
+
+                    # Display metrics
+                    col1, col2 = st.columns(2)
+
+                    with col1:
+                        st.subheader("Performance Metrics")
+                        accuracy = accuracy_score(st.session_state.y_test, model_eval['predictions'])
+                        st.metric("Accuracy", f"{accuracy:.4f}")
+
+                        st.text("Classification Report:")
+                        try:
+                            report = classification_report(st.session_state.y_test, model_eval['predictions'], output_dict=True, zero_division=0)
+                            report_df = pd.DataFrame(report).transpose()
+                            st.dataframe(report_df.style.format("{:.3f}")) # Format report
+                        except Exception as e:
+                             st.error(f"Error generating classification report: {e}")
+
+                    with col2:
+                        # Confusion matrix
+                        st.subheader("Confusion Matrix")
+                        cm_fig = plot_confusion_matrix_func(st.session_state.y_test, model_eval['predictions'], selected_model)
+                        st.pyplot(cm_fig)
+                        plt.close(cm_fig) # Close the figure
+
+                    # Feature importance
+                    st.subheader("Feature Importance")
+                    importance_fig = plot_feature_importance(
                         model_data['model'],
-                        st.session_state.training_columns # Use stored feature names
+                        st.session_state.training_columns, # Use the stored feature names
+                        selected_model
                     )
+                    if importance_fig:
+                        st.pyplot(importance_fig)
+                        plt.close(importance_fig) # Close the figure
 
-                    col_clin1, col_clin2 = st.columns([2, 1])
+                    # Clinical context analysis
+                    st.subheader("Clinical Context Analysis")
+                    try:
+                        feature_df, clinical_fig1, clinical_fig2, actionability_score = clinical_feature_analysis(
+                            model_data['model'],
+                            st.session_state.training_columns # Use stored feature names
+                        )
 
-                    with col_clin1:
-                        st.pyplot(clinical_fig1)
-                        plt.close(clinical_fig1)
+                        col_clin1, col_clin2 = st.columns([2, 1])
 
-                    with col_clin2:
-                        st.pyplot(clinical_fig2)
-                        plt.close(clinical_fig2)
-                        st.metric("Actionability Score", f"{actionability_score:.3f}",
-                                help="Indicates the relative importance of modifiable/semi-modifiable factors (higher is more actionable). Ranges from 0 to 1.")
+                        with col_clin1:
+                            st.pyplot(clinical_fig1)
+                            plt.close(clinical_fig1)
 
-                    st.subheader("Top 5 Modifiable Risk Factors")
-                    top_modifiable = feature_df[feature_df['Category'] == 'Modifiable'].head(5)
-                    if not top_modifiable.empty:
-                        st.dataframe(top_modifiable[['Feature', 'Importance']].style.format({'Importance': '{:.4f}'}))
-                    else:
-                        st.write("No modifiable factors identified in the top features for this model.")
+                        with col_clin2:
+                            st.pyplot(clinical_fig2)
+                            plt.close(clinical_fig2)
+                            st.metric("Actionability Score", f"{actionability_score:.3f}",
+                                      help="Indicates the relative importance of modifiable/semi-modifiable factors (higher is more actionable). Ranges from 0 to 1.")
 
-                    st.markdown("""
-                    <div class='info-box'>
-                    <p><strong>Interpretation:</strong> The 'Actionability Score' reflects the model's reliance on factors that can potentially be changed (lifestyle, medication adherence). Focusing on the 'Top Modifiable Risk Factors' identified by the model may offer the best routes for risk reduction.</p>
-                    </div>
-                    """, unsafe_allow_html=True)
+                        st.subheader("Top 5 Modifiable Risk Factors")
+                        top_modifiable = feature_df[feature_df['Category'] == 'Modifiable'].head(5)
+                        if not top_modifiable.empty:
+                            st.dataframe(top_modifiable[['Feature', 'Importance']].style.format({'Importance': '{:.4f}'}))
+                        else:
+                            st.write("No modifiable factors identified in the top features for this model.")
 
-                    # Download feature importance data
-                    st.subheader("Download Clinical Analysis Data")
-                    csv_clinical = feature_df.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label="Download Feature Importance & Modifiability (CSV)",
-                        data=csv_clinical,
-                        file_name=f"{selected_model}_clinical_feature_analysis.csv",
-                        mime='text/csv',
-                    )
-                except Exception as e:
-                    st.error(f"Error during clinical context analysis: {e}")
+                        st.markdown("""
+                        <div class='info-box'>
+                        <p><strong>Interpretation:</strong> The 'Actionability Score' reflects the model's reliance on factors that can potentially be changed (lifestyle, medication adherence). Focusing on the 'Top Modifiable Risk Factors' identified by the model may offer the best routes for risk reduction.</p>
+                        </div>
+                        """, unsafe_allow_html=True)
 
-            else:
-                st.warning(f"Results for model '{selected_model}' are not available or evaluation failed.")
+                        # Download feature importance data
+                        st.subheader("Download Clinical Analysis Data")
+                        csv_clinical = feature_df.to_csv(index=False).encode('utf-8')
+                        st.download_button(
+                            label="Download Feature Importance & Modifiability (CSV)",
+                            data=csv_clinical,
+                            file_name=f"{selected_model}_clinical_feature_analysis.csv",
+                            mime='text/csv',
+                        )
+                    except Exception as e:
+                        st.error(f"Error during clinical context analysis: {e}")
+
+                else:
+                    st.warning(f"Results for model '{selected_model}' are not available or evaluation failed.")
 
 
 # Model Comparison page
