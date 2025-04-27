@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -11,8 +12,8 @@ from sklearn.svm import SVC
 from sklearn.neural_network import MLPClassifier
 from xgboost import XGBClassifier
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, roc_curve, auc, precision_recall_curve
-from imblearn.combine import SMOTETomek
-import shap
+from imblearn.combine import SMOTETomek # You might need: pip install imbalanced-learn
+import shap # You might need: pip install shap
 import base64
 from io import BytesIO
 import time
@@ -40,11 +41,15 @@ st.markdown("""
     .sub-header {
         font-size: 1.5rem;
         color: #1E88E5;
+        margin-top: 20px;
+        margin-bottom: 10px;
     }
     .info-box {
         background-color: #F0F2F6;
-        padding: 10px;
+        padding: 15px;
         border-radius: 5px;
+        margin-bottom: 10px;
+        border: 1px solid #E0E0E0;
     }
     .model-metrics {
         display: flex;
@@ -53,6 +58,41 @@ st.markdown("""
     .shap-value {
         font-weight: bold;
         color: #FF4B4B;
+    }
+    /* Ensure plots have enough space */
+    .stPlotlyChart, .stImage {
+        margin-bottom: 20px;
+    }
+    /* Make buttons stand out more */
+    .stButton>button {
+        background-color: #4CAF50;
+        color: white;
+        padding: 10px 24px;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 16px;
+    }
+    .stButton>button:hover {
+        background-color: #45a049;
+    }
+    /* Style for risk level display */
+    .risk-high {
+        background-color:#FF5252;
+        padding:20px;
+        border-radius:10px;
+        text-align:center;
+    }
+    .risk-low {
+        background-color:#4CAF50;
+        padding:20px;
+        border-radius:10px;
+        text-align:center;
+    }
+    .risk-text {
+        color:white;
+        font-size: 1.8rem;
+        font-weight: bold;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -63,7 +103,7 @@ st.markdown("<h1 class='main-header'>❤️ Heart Attack Risk Prediction</h1>", 
 # App description
 st.markdown("""
 This app helps predict the risk of heart attack using machine learning models.
-Upload your data or use our sample dataset to get started.
+Upload your data or use our sample dataset to get started. Navigate using the sidebar.
 """)
 
 # Sidebar
@@ -73,21 +113,22 @@ st.sidebar.title("Controls")
 # Functions for data preprocessing and modeling
 @st.cache_data
 def load_sample_data():
+    """Generates or loads sample heart attack risk data."""
     try:
         # Sample data with realistic heart attack risk features
         data = {
             'Age': np.random.randint(30, 80, 1000),
             'Sex': np.random.choice(['Male', 'Female'], 1000),
-            'Cholesterol': np.random.randint(150, 300, 1000),
-            'Blood_Pressure': np.random.randint(90, 180, 1000),
-            'Heart_Rate': np.random.randint(60, 100, 1000),
-            'BMI': np.round(np.random.uniform(18, 35, 1000), 1),
+            'Cholesterol': np.random.randint(150, 350, 1000), # Increased max range slightly
+            'Blood_Pressure': np.random.randint(90, 180, 1000), # Systolic BP
+            'Heart_Rate': np.random.randint(60, 105, 1000), # Increased max range slightly
+            'BMI': np.round(np.random.uniform(18.5, 40, 1000), 1), # Wider BMI range
             'Smoking': np.random.choice(['Never', 'Former', 'Current'], 1000),
             'Diabetes': np.random.choice(['No', 'Yes'], 1000),
             'Family_History': np.random.choice(['No', 'Yes'], 1000),
-            'Exercise_Hours': np.round(np.random.uniform(0, 10, 1000), 1),
+            'Exercise_Hours': np.round(np.random.uniform(0, 15, 1000), 1), # Increased max range
             'Stress_Level': np.random.randint(1, 10, 1000),
-            'Heart_Attack_Risk': np.random.choice([0, 1], 1000, p=[0.7, 0.3])
+            'Heart_Attack_Risk': np.random.choice([0, 1], 1000, p=[0.65, 0.35]) # Slightly higher risk prevalence
         }
         df = pd.DataFrame(data)
         return df
@@ -95,297 +136,434 @@ def load_sample_data():
         st.error(f"Error generating sample data: {e}")
         return None
 
-def preprocess_data(df):
+# @st.cache_data # Caching this might be problematic if NaNs change
+def preprocess_data(df, fit_scaler=False, scaler=None, training_columns=None):
+    """
+    Preprocesses the data: handles missing values, encodes categoricals.
+    Optionally fits a scaler or uses a pre-fitted one.
+    Aligns columns with training data if provided.
+    """
+    df_processed = df.copy() # Avoid modifying original df
+
     # Handle missing values
-    for col in df.columns:
-        if df[col].dtype == 'object':
-            df[col] = df[col].fillna(df[col].mode()[0])
-        else:
-            df[col] = df[col].fillna(df[col].median())
-    
+    for col in df_processed.columns:
+        if df_processed[col].isnull().any(): # Only process if NaNs exist
+            if df_processed[col].dtype == 'object':
+                # Fill with mode, handle potential empty mode list
+                mode_val = df_processed[col].mode()
+                if not mode_val.empty:
+                    df_processed[col] = df_processed[col].fillna(mode_val[0])
+                else:
+                     df_processed[col] = df_processed[col].fillna('Unknown') # Fallback
+            elif pd.api.types.is_numeric_dtype(df_processed[col]):
+                 # Fill numeric with median
+                median_val = df_processed[col].median()
+                df_processed[col] = df_processed[col].fillna(median_val)
+            # Add handling for other types if necessary
+
     # Convert categorical variables to dummies
-    df_processed = pd.get_dummies(df, drop_first=True)
-    
-    return df_processed
+    # Use dummy_na=False to avoid columns for NaN categories
+    df_processed = pd.get_dummies(df_processed, drop_first=True, dummy_na=False)
+
+    # Align columns with training data if training_columns are provided (for prediction)
+    if training_columns is not None:
+        # Get missing columns in the new data
+        missing_cols = set(training_columns) - set(df_processed.columns)
+        for c in missing_cols:
+            df_processed[c] = 0 # Add missing columns with 0
+        # Ensure the order of columns is the same as in training
+        df_processed = df_processed[training_columns]
+
+    # Separate features (X) and target (y) if target exists
+    target_col = None
+    possible_targets = ['Heart_Attack_Risk', 'HeartAttackRisk', 'Risk', 'target', 'output']
+    for col in possible_targets:
+        if col in df_processed.columns:
+            target_col = col
+            break
+
+    if target_col:
+        X = df_processed.drop(columns=[target_col])
+        y = df_processed[target_col]
+    else:
+        X = df_processed # Assume all columns are features if no target found
+        y = None
+
+    # Scaling
+    if fit_scaler:
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+        return X, y, scaler, X.columns.tolist() # Return fitted scaler and column names
+    elif scaler is not None:
+        X_scaled = scaler.transform(X)
+        return X_scaled, X.columns.tolist() # Return scaled data and column names
+    else:
+        # If no scaling requested, return X and y
+        return X, y, None, X.columns.tolist() if X is not None else []
+
 
 def plot_correlation_heatmap(df):
-    fig, ax = plt.subplots(figsize=(12, 8))
-    corr = df.corr()
-    mask = np.triu(corr)
-    sns.heatmap(corr, mask=mask, annot=False, cmap='coolwarm', ax=ax, vmin=-1, vmax=1)
-    plt.title("Feature Correlation Heatmap")
+    """Plots the correlation heatmap for numerical features."""
+    fig, ax = plt.subplots(figsize=(14, 10))
+    # Select only numeric columns for correlation
+    numeric_df = df.select_dtypes(include=np.number)
+    if not numeric_df.empty:
+        corr = numeric_df.corr()
+        mask = np.triu(corr)
+        sns.heatmap(corr, mask=mask, annot=False, cmap='coolwarm', ax=ax, vmin=-1, vmax=1,
+                    cbar_kws={"shrink": .8}) # Adjust color bar size
+        plt.title("Feature Correlation Heatmap (Numeric Features)", fontsize=16)
+        plt.xticks(rotation=45, ha='right')
+        plt.yticks(rotation=0)
+        plt.tight_layout()
+    else:
+        ax.text(0.5, 0.5, "No numeric columns found for correlation.", ha='center', va='center')
     return fig
 
-def train_models(X, y):
-    # Class balance with SMOTETomek
-    smote_tomek = SMOTETomek(random_state=42)
-    X_resampled, y_resampled = smote_tomek.fit_resample(X, y)
-    
-    # Split dataset
-    X_train, X_test, y_train, y_test = train_test_split(
-        X_resampled, y_resampled, test_size=0.2, random_state=42, stratify=y_resampled
-    )
-    
-    # Normalize features
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
-    
-    # Train models
+# @st.cache_data # Caching models can be complex due to object state
+def train_models(X_train_df, y_train_series):
+    """Trains multiple classification models after resampling and scaling."""
     models = {}
     training_times = {}
-    
-    # XGBoost
-    with st.spinner('Training XGBoost model...'):
-        start_time = time.time()
-        xgb = XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=42)
-        xgb.fit(X_train_scaled, y_train)
-        training_times['XGBoost'] = time.time() - start_time
-        models['XGBoost'] = {
-            'model': xgb,
-            'predictions': xgb.predict(X_test_scaled),
-            'probabilities': xgb.predict_proba(X_test_scaled)[:, 1]
-        }
-    
-    # Random Forest
-    with st.spinner('Training Random Forest model...'):
-        start_time = time.time()
-        rf = RandomForestClassifier(random_state=42)
-        rf.fit(X_train_scaled, y_train)
-        training_times['Random Forest'] = time.time() - start_time
-        models['Random Forest'] = {
-            'model': rf,
-            'predictions': rf.predict(X_test_scaled),
-            'probabilities': rf.predict_proba(X_test_scaled)[:, 1]
-        }
-    
-    # Logistic Regression
-    with st.spinner('Training Logistic Regression model...'):
-        start_time = time.time()
-        lr = LogisticRegression(random_state=42, max_iter=1000)
-        lr.fit(X_train_scaled, y_train)
-        training_times['Logistic Regression'] = time.time() - start_time
-        models['Logistic Regression'] = {
-            'model': lr,
-            'predictions': lr.predict(X_test_scaled),
-            'probabilities': lr.predict_proba(X_test_scaled)[:, 1]
-        }
-    
-    # SVM
-    with st.spinner('Training Support Vector Machine model...'):
-        start_time = time.time()
-        svm = SVC(random_state=42, probability=True)
-        svm.fit(X_train_scaled, y_train)
-        training_times['SVM'] = time.time() - start_time
-        models['SVM'] = {
-            'model': svm,
-            'predictions': svm.predict(X_test_scaled),
-            'probabilities': svm.predict_proba(X_test_scaled)[:, 1]
-        }
-    
-    # Gradient Boosting
-    with st.spinner('Training Gradient Boosting model...'):
-        start_time = time.time()
-        gb = GradientBoostingClassifier(random_state=42)
-        gb.fit(X_train_scaled, y_train)
-        training_times['Gradient Boosting'] = time.time() - start_time
-        models['Gradient Boosting'] = {
-            'model': gb,
-            'predictions': gb.predict(X_test_scaled),
-            'probabilities': gb.predict_proba(X_test_scaled)[:, 1]
-        }
-    
-    # Neural Network
-    with st.spinner('Training Neural Network model...'):
-        start_time = time.time()
-        nn = MLPClassifier(hidden_layer_sizes=(100, 50), max_iter=500, random_state=42)
-        nn.fit(X_train_scaled, y_train)
-        training_times['Neural Network'] = time.time() - start_time
-        models['Neural Network'] = {
-            'model': nn,
-            'predictions': nn.predict(X_test_scaled),
-            'probabilities': nn.predict_proba(X_test_scaled)[:, 1]
-        }
-    
-    return models, X_train, X_test, y_train, y_test, scaler, X_train_scaled, X_test_scaled, training_times
 
-def plot_confusion_matrix(y_true, y_pred, title):
+    # Class balance with SMOTETomek
+    # Ensure X and y are numpy arrays before resampling
+    X_np = X_train_df.values
+    y_np = y_train_series.values
+
+    st.write(f"Original training data shape: {X_np.shape}")
+    st.write(f"Original training target distribution: {np.bincount(y_np)}")
+
+    smote_tomek = SMOTETomek(random_state=42, n_jobs=-1) # Use n_jobs for potential speedup
+    try:
+        X_resampled, y_resampled = smote_tomek.fit_resample(X_np, y_np)
+        st.write(f"Resampled training data shape: {X_resampled.shape}")
+        st.write(f"Resampled training target distribution: {np.bincount(y_resampled)}")
+    except Exception as e:
+        st.error(f"Error during resampling with SMOTETomek: {e}")
+        st.warning("Proceeding without resampling.")
+        X_resampled, y_resampled = X_np, y_np # Fallback to original data
+
+    # Split resampled data (or original if resampling failed)
+    # Note: We already split the original data before calling this function.
+    # Here we just scale the training data provided (X_train_df).
+    # The scaling should happen based on the training data.
+
+    # We don't need another train/test split here. The data passed in
+    # (X_train_df, y_train_series) is the training set.
+    # We'll scale this training set and use it to train models.
+    # The test set (from the initial split) will be scaled using the *same* scaler.
+
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_resampled) # Fit scaler on (potentially resampled) training data
+
+    # --- Model Definitions ---
+    model_defs = {
+        'XGBoost': XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=42),
+        'Random Forest': RandomForestClassifier(random_state=42, n_jobs=-1),
+        'Logistic Regression': LogisticRegression(random_state=42, max_iter=1000, solver='liblinear'), # Changed solver
+        'SVM': SVC(random_state=42, probability=True),
+        'Gradient Boosting': GradientBoostingClassifier(random_state=42),
+        'Neural Network': MLPClassifier(hidden_layer_sizes=(100, 50), max_iter=500, random_state=42, early_stopping=True) # Added early stopping
+    }
+
+    # --- Train Models ---
+    for name, model_instance in model_defs.items():
+         with st.spinner(f'Training {name} model...'):
+            start_time = time.time()
+            try:
+                model_instance.fit(X_train_scaled, y_resampled)
+                elapsed_time = time.time() - start_time
+                training_times[name] = elapsed_time
+                models[name] = {
+                    'model': model_instance,
+                    # Predictions/probabilities will be done later on the test set
+                }
+                st.write(f"✔️ {name} trained in {elapsed_time:.2f} sec")
+            except Exception as e:
+                st.error(f"Error training {name}: {e}")
+
+    return models, scaler, training_times, X_train_scaled, y_resampled # Return fitted scaler and potentially resampled data
+
+def evaluate_models(models, X_test_scaled, y_test):
+    """Evaluates trained models on the test set."""
+    results = {}
+    for name, model_data in models.items():
+        model = model_data['model']
+        try:
+            predictions = model.predict(X_test_scaled)
+            probabilities = model.predict_proba(X_test_scaled)[:, 1]
+            results[name] = {
+                'predictions': predictions,
+                'probabilities': probabilities
+            }
+        except Exception as e:
+            st.error(f"Error evaluating {name}: {e}")
+            results[name] = {'predictions': None, 'probabilities': None} # Indicate failure
+    return results
+
+
+def plot_confusion_matrix_func(y_true, y_pred, title):
+    """Plots a confusion matrix."""
     fig, ax = plt.subplots(figsize=(6, 5))
-    cm = confusion_matrix(y_true, y_pred)
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=ax)
-    plt.xlabel("Predicted")
-    plt.ylabel("Actual")
-    plt.title(f"Confusion Matrix - {title}")
+    try:
+        cm = confusion_matrix(y_true, y_pred)
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=ax,
+                    xticklabels=['Predicted 0', 'Predicted 1'],
+                    yticklabels=['Actual 0', 'Actual 1'])
+        plt.xlabel("Predicted Label", fontsize=12)
+        plt.ylabel("Actual Label", fontsize=12)
+        plt.title(f"Confusion Matrix - {title}", fontsize=14)
+        plt.tight_layout()
+    except Exception as e:
+        ax.text(0.5, 0.5, f"Error plotting CM: {e}", ha='center', va='center')
     return fig
 
-def plot_roc_curve(y_true, probas, models):
+def plot_roc_curve_func(y_true, model_results, title="ROC Curve Comparison"):
+    """Plots ROC curves for multiple models."""
     fig, ax = plt.subplots(figsize=(10, 8))
-    
-    for model_name, y_prob in probas.items():
-        fpr, tpr, _ = roc_curve(y_true, y_prob)
-        roc_auc = auc(fpr, tpr)
-        ax.plot(fpr, tpr, lw=2, label=f'{model_name} (AUC = {roc_auc:.3f})')
-    
-    ax.plot([0, 1], [0, 1], 'k--', lw=2)
+    ax.plot([0, 1], [0, 1], 'k--', lw=2, label='Chance') # Add chance line
+
+    for model_name, data in model_results.items():
+        if data.get('probabilities') is not None:
+            try:
+                fpr, tpr, _ = roc_curve(y_true, data['probabilities'])
+                roc_auc = auc(fpr, tpr)
+                ax.plot(fpr, tpr, lw=2, label=f'{model_name} (AUC = {roc_auc:.3f})')
+            except Exception as e:
+                st.warning(f"Could not plot ROC for {model_name}: {e}")
+
     ax.set_xlim([0.0, 1.0])
     ax.set_ylim([0.0, 1.05])
-    ax.set_xlabel('False Positive Rate')
-    ax.set_ylabel('True Positive Rate')
-    ax.set_title('Receiver Operating Characteristic (ROC) Curve')
-    ax.legend(loc="lower right")
-    
+    ax.set_xlabel('False Positive Rate', fontsize=12)
+    ax.set_ylabel('True Positive Rate', fontsize=12)
+    ax.set_title(title, fontsize=16)
+    ax.legend(loc="lower right", fontsize=10)
+    ax.grid(alpha=0.3)
+    plt.tight_layout()
     return fig
 
-def plot_precision_recall_curve(y_true, probas, models):
+def plot_precision_recall_curve_func(y_true, model_results, title="Precision-Recall Curve Comparison"):
+    """Plots Precision-Recall curves for multiple models."""
     fig, ax = plt.subplots(figsize=(10, 8))
-    
-    for model_name, y_prob in probas.items():
-        precision, recall, _ = precision_recall_curve(y_true, y_prob)
-        ax.plot(recall, precision, lw=2, label=f'{model_name}')
-    
+
+    for model_name, data in model_results.items():
+         if data.get('probabilities') is not None:
+            try:
+                precision, recall, _ = precision_recall_curve(y_true, data['probabilities'])
+                # Calculate Average Precision (AP)
+                ap = auc(recall, precision)
+                ax.plot(recall, precision, lw=2, label=f'{model_name} (AP = {ap:.3f})')
+            except Exception as e:
+                st.warning(f"Could not plot P-R for {model_name}: {e}")
+
     ax.set_xlim([0.0, 1.0])
     ax.set_ylim([0.0, 1.05])
-    ax.set_xlabel('Recall')
-    ax.set_ylabel('Precision')
-    ax.set_title('Precision-Recall Curve')
-    ax.legend(loc="best")
-    
+    ax.set_xlabel('Recall', fontsize=12)
+    ax.set_ylabel('Precision', fontsize=12)
+    ax.set_title(title, fontsize=16)
+    ax.legend(loc="best", fontsize=10) # Changed location
+    ax.grid(alpha=0.3)
+    plt.tight_layout()
     return fig
 
-def plot_feature_importance(model, feature_names, title):
-    # Check if model has feature_importances_ attribute
+def plot_feature_importance(model, feature_names, title, top_n=20):
+    """Plots feature importances or coefficients."""
+    importances = None
+    importance_label = "Importance"
+
     if hasattr(model, 'feature_importances_'):
         importances = model.feature_importances_
-        indices = np.argsort(importances)[::-1]
-        features = np.array(feature_names)[indices]
-        values = importances[indices]
-
-        fig, ax = plt.subplots(figsize=(10, 6))
-        sns.barplot(x=values[:15], y=features[:15], palette='viridis', ax=ax)
-        plt.title(f'{title} Feature Importances')
-        plt.xlabel("Importance")
-        plt.ylabel("Feature")
-        return fig
     elif hasattr(model, 'coef_'):
-        # For linear models like Logistic Regression
+        # For linear models, use absolute coefficients
         importances = np.abs(model.coef_[0])
-        indices = np.argsort(importances)[::-1]
-        features = np.array(feature_names)[indices]
-        values = importances[indices]
-        
-        fig, ax = plt.subplots(figsize=(10, 6))
-        sns.barplot(x=values[:15], y=features[:15], palette='viridis', ax=ax)
-        plt.title(f'{title} Feature Coefficients (Absolute Values)')
-        plt.xlabel("Coefficient Magnitude")
-        plt.ylabel("Feature")
-        return fig
+        importance_label = "Coefficient Magnitude"
     else:
-        return None  # Model doesn't support direct feature importance
+        st.info(f"Feature importance not directly available for {type(model).__name__}.")
+        return None # Model doesn't support direct feature importance
+
+    if importances is not None:
+        feature_importance_df = pd.DataFrame({'Feature': feature_names, 'Importance': importances})
+        feature_importance_df = feature_importance_df.sort_values(by='Importance', ascending=False).head(top_n)
+
+        fig, ax = plt.subplots(figsize=(12, max(6, len(feature_importance_df) * 0.4))) # Dynamic height
+        sns.barplot(x='Importance', y='Feature', data=feature_importance_df, palette='viridis', ax=ax)
+        plt.title(f'{title} Feature Importances/Coefficients', fontsize=16)
+        plt.xlabel(importance_label, fontsize=12)
+        plt.ylabel("Feature", fontsize=12)
+        plt.tight_layout()
+        return fig
+    return None
+
 
 def clinical_feature_analysis(model, feature_names):
-    # Get feature importances based on model type
+    """Analyzes feature importance based on clinical modifiability."""
+    importances = None
     if hasattr(model, 'feature_importances_'):
         importances = model.feature_importances_
     elif hasattr(model, 'coef_'):
-        importances = np.abs(model.coef_[0])  # For linear models
+        importances = np.abs(model.coef_[0])
     else:
-        # Create mock importances if model doesn't support them
+        # Handle models without direct importance (e.g., some SVM kernels)
+        # Create mock importances or skip - let's assign equal importance for now
+        st.warning(f"Using equal importance for clinical analysis as {type(model).__name__} lacks direct feature importance.")
         importances = np.ones(len(feature_names)) / len(feature_names)
-    
-    # Define modifiability categories
-    modifiable = [
-        'Cholesterol', 'Blood_Pressure', 'BMI', 'Exercise_Hours', 
-        'Smoking', 'Stress_Level', 'Sedentary'
-    ]
-    
-    semi_modifiable = [
-        'Medication', 'Heart_Rate'
-    ]
-    
-    non_modifiable = [
-        'Age', 'Sex', 'Family_History', 'Diabetes'
-    ]
-    
-    # Categorize each feature
+
+    # Define modifiability categories based on common knowledge
+    # Use lowercase feature names for matching
+    feature_names_lower = [f.lower() for f in feature_names]
+    input_feature_names_lower = {f.lower(): f for f in feature_names} # Map back to original case
+
+    # Keywords for categorization (adjust as needed for specific feature names)
+    modifiable_kws = ['cholesterol', 'blood_pressure', 'bmi', 'exercise', 'smoking', 'stress', 'sedentary']
+    semi_modifiable_kws = ['medication', 'heart_rate'] # Heart rate can be influenced by fitness/meds
+    non_modifiable_kws = ['age', 'sex', 'family_history', 'diabetes'] # Diabetes status itself often less modifiable than risk factors
+
     feature_categories = []
-    for feature in feature_names:
-        if any(factor in feature for factor in modifiable):
+    original_case_features = []
+
+    for feature_lower in feature_names_lower:
+        category = 'Other' # Default category
+        if any(kw in feature_lower for kw in modifiable_kws):
             category = 'Modifiable'
-        elif any(factor in feature for factor in semi_modifiable):
+        elif any(kw in feature_lower for kw in semi_modifiable_kws):
             category = 'Semi-Modifiable'
-        elif any(factor in feature for factor in non_modifiable):
+        elif any(kw in feature_lower for kw in non_modifiable_kws):
             category = 'Non-Modifiable'
-        else:
-            category = 'Other'
         feature_categories.append(category)
-    
-    # Create DataFrame with feature info
+        original_case_features.append(input_feature_names_lower[feature_lower]) # Get original case feature name
+
     feature_df = pd.DataFrame({
-        'Feature': feature_names,
+        'Feature': original_case_features, # Use original case names
         'Importance': importances,
         'Category': feature_categories
     })
-    
-    # Sort by importance
     feature_df = feature_df.sort_values('Importance', ascending=False)
-    
-    # Calculate importance by category
+
     category_importance = feature_df.groupby('Category')['Importance'].sum().reset_index()
-    
-    # Plot feature importance with clinical context
+    total_importance = category_importance['Importance'].sum()
+    # Handle division by zero if total importance is 0
+    if total_importance == 0: total_importance = 1
+
+    # --- Plot Feature Importance with Clinical Context ---
     fig1, ax1 = plt.subplots(figsize=(12, 8))
-    sns.barplot(x='Importance', y='Feature', hue='Category', data=feature_df.head(15), ax=ax1)
-    plt.title('Top 15 Feature Importances with Clinical Modifiability Context')
-    plt.xlabel('Importance')
-    plt.ylabel('Feature')
+    top_features = feature_df.head(15)
+    sns.barplot(x='Importance', y='Feature', hue='Category', data=top_features, ax=ax1, dodge=False) # dodge=False stacks hues
+    plt.title('Top 15 Feature Importances by Clinical Modifiability', fontsize=16)
+    plt.xlabel('Importance', fontsize=12)
+    plt.ylabel('Feature', fontsize=12)
+    plt.legend(title='Modifiability')
     plt.tight_layout()
-    
-    # Plot categorical pie chart
-    fig2, ax2 = plt.subplots(figsize=(10, 6))
-    ax2.pie(category_importance['Importance'], 
+
+    # --- Plot Categorical Pie Chart ---
+    fig2, ax2 = plt.subplots(figsize=(8, 8)) # Made it square
+    colors = {'Modifiable': '#2ecc71', 'Semi-Modifiable': '#f1c40f', 'Non-Modifiable': '#e74c3c', 'Other': '#95a5a6'}
+    pie_colors = [colors.get(cat, '#bdc3c7') for cat in category_importance['Category']]
+    ax2.pie(category_importance['Importance'],
             labels=category_importance['Category'],
-            autopct='%1.1f%%', 
+            autopct='%1.1f%%',
             startangle=90,
-            colors=['#2ecc71', '#f1c40f', '#e74c3c', '#95a5a6'])
-    ax2.set_title('Contribution to Heart Attack Risk by Factor Modifiability')
-    ax2.axis('equal')
-    
-    # Create actionability score
-    actionability_score = (
-        category_importance[category_importance['Category'] == 'Modifiable']['Importance'].sum() +
-        0.5 * category_importance[category_importance['Category'] == 'Semi-Modifiable']['Importance'].sum()
-    ) / category_importance['Importance'].sum()
-    
+            colors=pie_colors,
+            wedgeprops={'edgecolor': 'white'}) # Add edge color
+    ax2.set_title('Contribution to Prediction by Factor Modifiability', fontsize=16)
+    ax2.axis('equal') # Equal aspect ratio ensures that pie is drawn as a circle.
+
+    # --- Calculate Actionability Score ---
+    actionability_score = 0
+    if 'Modifiable' in category_importance['Category'].values:
+        actionability_score += category_importance.loc[category_importance['Category'] == 'Modifiable', 'Importance'].sum()
+    if 'Semi-Modifiable' in category_importance['Category'].values:
+        actionability_score += 0.5 * category_importance.loc[category_importance['Category'] == 'Semi-Modifiable', 'Importance'].sum()
+
+    actionability_score /= total_importance
+
     return feature_df, fig1, fig2, actionability_score
 
-def predict_individual_risk(input_data, model, X_columns, scaler, explainer=None):
-    df_input = pd.DataFrame([input_data])
-    # Ensure columns match the training data
-    df_input_dummies = pd.get_dummies(df_input)
-    # Fill missing columns with 0
-    for col in X_columns:
-        if col not in df_input_dummies.columns:
-            df_input_dummies[col] = 0
-    # Select only columns that were in the training data
-    df_input_dummies = df_input_dummies[X_columns]
-    
-    # Scale the data
-    df_input_scaled = scaler.transform(df_input_dummies)
-    
+
+def predict_individual_risk(input_data_dict, model, training_columns, scaler, explainer=None, feature_names_original_case=None):
+    """Predicts risk for a single individual after preprocessing."""
+    df_input = pd.DataFrame([input_data_dict])
+
+    # Preprocess the input data using the fitted scaler and training columns
+    # Handle missing values and dummies first (similar to preprocess_data)
+    for col in df_input.columns:
+        if df_input[col].isnull().any():
+            if df_input[col].dtype == 'object':
+                mode_val = df_input[col].mode()
+                df_input[col] = df_input[col].fillna(mode_val[0] if not mode_val.empty else 'Unknown')
+            elif pd.api.types.is_numeric_dtype(df_input[col]):
+                median_val = df_input[col].median() # Or use mean/median from training data if stored
+                df_input[col] = df_input[col].fillna(median_val)
+
+    df_input_dummies = pd.get_dummies(df_input, drop_first=True, dummy_na=False)
+
+    # Align columns with the training data columns
+    df_input_reindexed = df_input_dummies.reindex(columns=training_columns, fill_value=0)
+
+    # Scale the data using the *fitted* scaler
+    try:
+        df_input_scaled = scaler.transform(df_input_reindexed)
+    except Exception as e:
+        st.error(f"Error scaling input data: {e}")
+        st.error(f"Input columns after reindexing: {df_input_reindexed.columns.tolist()}")
+        st.error(f"Expected columns by scaler: {training_columns}")
+        return None, None, None # Indicate error
+
     # Make prediction
     prediction = model.predict(df_input_scaled)[0]
-    proba = model.predict_proba(df_input_scaled)[0][1]
-    
+    proba = model.predict_proba(df_input_scaled)[0][1] # Probability of class 1 (risk)
+
     # Create SHAP explanation if explainer exists
+    shap_values_instance = None
+    expected_value = None
     if explainer is not None:
         try:
-            shap_values = explainer.shap_values(df_input_scaled)
-            return prediction, proba, shap_values
+            # SHAP expects numpy array usually
+            shap_values_list = explainer.shap_values(df_input_scaled) # This might return a list for multi-class or just array for binary
+
+            # Handle different SHAP explainer outputs
+            if isinstance(shap_values_list, list) and len(shap_values_list) == 2:
+                # Common for binary classification: values for class 0 and class 1
+                shap_values_instance = shap_values_list[1][0] # Use values for class 1
+            elif isinstance(shap_values_list, np.ndarray):
+                 # Sometimes returns single array for binary
+                 shap_values_instance = shap_values_list[0]
+            else:
+                st.warning(f"Unexpected SHAP values format: {type(shap_values_list)}. Cannot generate waterfall plot.")
+
+            # Get expected value (base value for SHAP plots)
+            if hasattr(explainer, 'expected_value'):
+                 if isinstance(explainer.expected_value, (list, np.ndarray)) and len(explainer.expected_value) == 2:
+                     expected_value = explainer.expected_value[1] # Use expected value for class 1
+                 elif isinstance(explainer.expected_value, (int, float)):
+                     expected_value = explainer.expected_value
+                 else:
+                     st.warning(f"Unexpected format for explainer.expected_value: {type(explainer.expected_value)}")
+
+
         except Exception as e:
             st.error(f"Error generating SHAP explanation: {str(e)}")
-            return prediction, proba, None
-    
-    return prediction, proba, None
+            # Optionally provide more debug info:
+            # st.error(f"Data shape sent to SHAP: {df_input_scaled.shape}")
+            # st.error(f"Data type sent to SHAP: {df_input_scaled.dtype}")
+
+
+    # Prepare SHAP Explanation object if values were generated
+    shap_explanation = None
+    if shap_values_instance is not None and expected_value is not None and feature_names_original_case is not None:
+         # Ensure feature names match the number of SHAP values
+         if len(feature_names_original_case) == len(shap_values_instance):
+            shap_explanation = shap.Explanation(
+                values=shap_values_instance,
+                base_values=expected_value,
+                data=df_input_scaled[0], # Use the scaled data instance
+                feature_names=feature_names_original_case # Use original case feature names passed in
+            )
+         else:
+             st.warning(f"Mismatch between number of feature names ({len(feature_names_original_case)}) and SHAP values ({len(shap_values_instance)}). Cannot create Explanation object.")
+
+
+    return prediction, proba, shap_explanation # Return SHAP Explanation object
 
 # App navigation
 app_mode = st.sidebar.selectbox(
@@ -394,756 +572,962 @@ app_mode = st.sidebar.selectbox(
 )
 
 # Initialize session state
-if 'data' not in st.session_state:
-    st.session_state.data = None
-if 'models' not in st.session_state:
-    st.session_state.models = None
-if 'X' not in st.session_state:
-    st.session_state.X = None
-if 'y' not in st.session_state:
-    st.session_state.y = None
-if 'scaler' not in st.session_state:
-    st.session_state.scaler = None
-if 'explainer' not in st.session_state:
-    st.session_state.explainer = None
-if 'feature_names' not in st.session_state:
-    st.session_state.feature_names = None
-if 'training_times' not in st.session_state:
-    st.session_state.training_times = None
+default_session_state = {
+    'data': None,
+    'models': None,
+    'X': None, # Store original X before preprocessing
+    'y': None, # Store original y before preprocessing
+    'X_train': None, 'X_test': None, 'y_train': None, 'y_test': None, # Split data
+    'scaler': None,
+    'explainer': None, # SHAP explainer (currently only for XGBoost)
+    'feature_names': None, # Feature names *after* dummy encoding, used for training
+    'training_columns': None, # Alias for feature_names, to be clear
+    'training_times': None,
+    'model_results': None, # Store predictions and probabilities
+    'best_model_name': None,
+    'X_train_scaled': None, # Needed for some SHAP explainers
+    'X_test_scaled': None,
+}
+
+for key, value in default_session_state.items():
+    if key not in st.session_state:
+        st.session_state[key] = value
+
+
+# --- Page Implementations ---
 
 # Home page
 if app_mode == "Home":
     st.markdown("<h2 class='sub-header'>Welcome to the Heart Attack Risk Prediction App!</h2>", unsafe_allow_html=True)
-    
-    col1, col2 = st.columns([1, 1])
-    
+
+    col1, col2 = st.columns([2, 1]) # Give more space to text
+
     with col1:
         st.markdown("""
         ### About this app
-        This application helps healthcare professionals and individuals assess heart attack risk using machine learning.
-        
+        This application utilizes machine learning to estimate the risk of heart attack based on user-provided health data or a sample dataset. It aims to provide insights into potential risk factors.
+
         ### Key features:
-        - Data exploration and visualization
-        - Training and comparison of multiple machine learning models:
-          - XGBoost
-          - Random Forest
-          - Logistic Regression
-          - Support Vector Machine (SVM) 
-          - Gradient Boosting
-          - Neural Network (MLP)
-        - Clinical context analysis of risk factors
-        - Personalized risk prediction
-        
+        - **Data Exploration:** Visualize and understand your dataset.
+        - **Model Training:** Train various ML models (XGBoost, Random Forest, etc.) on your data.
+        - **Model Comparison:** Evaluate and compare model performance using metrics like Accuracy, AUC, F1-score, and plots (ROC, Precision-Recall).
+        - **Clinical Context:** Analyze feature importance in terms of modifiable vs. non-modifiable factors.
+        - **Personalized Prediction:** Get risk estimates for individual profiles with explanations (using SHAP where available).
+        - **Batch Prediction:** Predict risk for multiple individuals from a CSV file.
+
         ### How to use:
-        1. Start by uploading your dataset or use our sample data
-        2. Explore the data visualizations
-        3. Train and evaluate models
-        4. Compare model performance
-        5. Get personalized risk predictions
-        """)
-    
+        1.  **Load Data:** Use the options below to upload your CSV or use the sample data.
+        2.  **Explore (Optional):** Navigate to 'Data Exploration' via the sidebar to view data details.
+        3.  **Train Models:** Go to 'Model Training' to train the predictive models.
+        4.  **Compare (Optional):** Visit 'Model Comparison' to see how different models perform.
+        5.  **Predict:** Use 'Risk Prediction' to assess risk for new individuals or batches.
+        """, unsafe_allow_html=True) # Use unsafe_allow_html for markdown styling
+
     with col2:
-        st.image("https://img.icons8.com/color/240/000000/heart-with-pulse.png", width=200)
-    
+        # Placeholder for an image or graphic
+        st.image("https://img.icons8.com/external-flaticons-lineal-color-flat-icons/256/external-heart-anatomy-flaticons-lineal-color-flat-icons-3.png",
+                 caption="Heart Health Analytics", use_column_width=True)
+        st.info("Navigate through the app sections using the sidebar menu.")
+
+
     # Data loading section
     st.markdown("<h3 class='sub-header'>Load Data</h3>", unsafe_allow_html=True)
-    
+
     data_source = st.radio(
         "Choose data source:",
-        ("Upload your own data", "Use sample data")
+        ("Use sample data", "Upload your own data"),
+        key='data_source_radio' # Add key for state consistency
     )
-    
+
     if data_source == "Upload your own data":
         uploaded_file = st.file_uploader("Upload CSV file", type=["csv"])
         if uploaded_file is not None:
             try:
                 df = pd.read_csv(uploaded_file)
                 st.session_state.data = df
-                st.success("Data successfully loaded!")
+                # Clear previous modeling results if new data is uploaded
+                for key in ['models', 'scaler', 'X', 'y', 'X_train', 'X_test', 'y_train', 'y_test', 'feature_names', 'training_columns', 'model_results', 'explainer']:
+                    st.session_state[key] = None
+                st.success("Data successfully loaded! File details below.")
+                st.write("Uploaded Data Head:")
+                st.dataframe(df.head())
+                st.write(f"Shape: {df.shape}")
             except Exception as e:
                 st.error(f"Error loading file: {str(e)}")
+                st.session_state.data = None # Ensure data state is None on error
     else:
-        sample_data = load_sample_data()
-        if sample_data is not None:
-            st.session_state.data = sample_data
-            st.success("Sample data loaded!")
-    
+        # Use sample data
+        if st.button("Load Sample Data"):
+            sample_data = load_sample_data()
+            if sample_data is not None:
+                st.session_state.data = sample_data
+                 # Clear previous modeling results
+                for key in ['models', 'scaler', 'X', 'y', 'X_train', 'X_test', 'y_train', 'y_test', 'feature_names', 'training_columns', 'model_results', 'explainer']:
+                    st.session_state[key] = None
+                st.success("Sample data loaded!")
+                st.write("Sample Data Head:")
+                st.dataframe(sample_data.head())
+                st.write(f"Shape: {sample_data.shape}")
+            else:
+                st.error("Failed to load sample data.")
+
     if st.session_state.data is not None:
-        st.markdown("<p class='info-box'>✅ Data loaded! Navigate to 'Data Exploration' to continue.</p>", unsafe_allow_html=True)
+        st.markdown("<p class='info-box'>✅ Data loaded! Navigate to 'Data Exploration' or 'Model Training' using the sidebar.</p>", unsafe_allow_html=True)
+    else:
+        st.info("Please load data to proceed.")
+
 
 # Data Exploration page
 elif app_mode == "Data Exploration":
     st.markdown("<h2 class='sub-header'>Data Exploration</h2>", unsafe_allow_html=True)
-    
+
     if st.session_state.data is None:
-        st.warning("Please load data on the Home page first!")
+        st.warning("⚠️ Please load data on the Home page first!")
     else:
         df = st.session_state.data
-        
+
         # Data overview
         st.subheader("Dataset Overview")
         st.write(f"Dataset shape: {df.shape[0]} rows, {df.shape[1]} columns")
-        
+
         col1, col2 = st.columns(2)
         with col1:
-            if st.checkbox("Show raw data", value=True):
-                st.write(df.head())
+            if st.checkbox("Show Raw Data Sample", value=False):
+                st.dataframe(df.head(10)) # Show more rows
         with col2:
-            if st.checkbox("Show column information", value=True):
-                st.write(df.dtypes)
-        
+            if st.checkbox("Show Column Information (Data Types)", value=True):
+                 st.dataframe(df.dtypes.reset_index().rename(columns={'index':'Column', 0:'DataType'}))
+
         # Missing values
         st.subheader("Missing Values Analysis")
         missing_data = df.isnull().sum()
-        if missing_data.sum() > 0:
-            st.write(missing_data[missing_data > 0])
+        missing_data = missing_data[missing_data > 0] # Filter only columns with missing values
+        if not missing_data.empty:
+            st.write("Columns with missing values:")
+            st.dataframe(missing_data.reset_index().rename(columns={'index':'Column', 0:'Missing Count'}))
+            st.info("Missing values will be handled during preprocessing (median for numeric, mode for categoric).")
         else:
-            st.write("No missing values found in the dataset.")
-        
-        # Basic statistics
-        st.subheader("Statistical Summary")
-        st.write(df.describe())
-        
+            st.success("✅ No missing values found in the dataset.")
+
+        # Basic statistics for numeric columns
+        st.subheader("Statistical Summary (Numeric Features)")
+        numeric_cols = df.select_dtypes(include=np.number)
+        if not numeric_cols.empty:
+            st.dataframe(numeric_cols.describe().T) # Transpose for better readability
+        else:
+            st.write("No numeric columns found.")
+
         # Data distributions
         st.subheader("Data Distributions")
-        
-        numeric_cols = df.select_dtypes(include=['float64', 'int64']).columns.tolist()
-        if len(numeric_cols) > 0:
-            selected_col = st.selectbox("Select column for histogram:", numeric_cols)
-            
-            fig, ax = plt.subplots(figsize=(10, 6))
-            sns.histplot(df[selected_col], kde=True, ax=ax)
-            plt.title(f"Distribution of {selected_col}")
-            st.pyplot(fig)
-        
+        numeric_cols_list = numeric_cols.columns.tolist()
+        if numeric_cols_list:
+            selected_col_hist = st.selectbox("Select numeric column for histogram:", numeric_cols_list)
+            if selected_col_hist:
+                fig_hist, ax_hist = plt.subplots(figsize=(10, 6))
+                sns.histplot(df[selected_col_hist].dropna(), kde=True, ax=ax_hist) # Drop NaNs for plotting
+                plt.title(f"Distribution of {selected_col_hist}", fontsize=14)
+                plt.xlabel(selected_col_hist, fontsize=12)
+                plt.ylabel("Frequency", fontsize=12)
+                plt.tight_layout()
+                st.pyplot(fig_hist)
+                plt.close(fig_hist) # Close the figure
+
         # Target variable distribution
         st.subheader("Target Variable Distribution")
-        
-        # Try to find target column
         target_col = None
-        possible_targets = ['Heart_Attack_Risk', 'HeartAttackRisk', 'Risk', 'target']
+        possible_targets = ['Heart_Attack_Risk', 'HeartAttackRisk', 'Risk', 'target', 'output'] # Add 'output'
         for col in possible_targets:
             if col in df.columns:
                 target_col = col
+                st.success(f"✅ Target column identified as: '{target_col}'")
                 break
-        
+
         if target_col:
-            fig, ax = plt.subplots(figsize=(8, 6))
-            value_counts = df[target_col].value_counts()
-            ax.pie(value_counts, labels=value_counts.index, autopct='%1.1f%%', startangle=90)
-            ax.axis('equal')
-            plt.title(f"Distribution of {target_col}")
-            st.pyplot(fig)
-            
-            # Check if binary
-            if df[target_col].nunique() != 2:
-                st.warning("Target variable has more than 2 unique values. Please ensure it's binary (0/1) for classification.")
+            if df[target_col].isnull().any():
+                st.warning(f"Target column '{target_col}' contains missing values. Rows with missing target will be dropped.")
+                df_cleaned = df.dropna(subset=[target_col])
+            else:
+                df_cleaned = df.copy()
+
+            if df_cleaned[target_col].nunique() == 2:
+                fig_pie, ax_pie = plt.subplots(figsize=(6, 6))
+                value_counts = df_cleaned[target_col].value_counts()
+                ax_pie.pie(value_counts, labels=value_counts.index, autopct='%1.1f%%', startangle=90, colors=['#66b3ff','#ff9999'])
+                ax_pie.set_title(f"Distribution of {target_col}", fontsize=14)
+                st.pyplot(fig_pie)
+                plt.close(fig_pie) # Close the figure
+
+                # Prepare data for modeling (only if target is valid)
+                st.markdown("<h3 class='sub-header'>Prepare Data for Modeling</h3>", unsafe_allow_html=True)
+                st.write("Preprocessing data (handling missing values, encoding categoricals)...")
+                try:
+                    # Preprocess without scaling here, just get features and target
+                    X_processed, y_processed, _, feature_names = preprocess_data(df_cleaned) # No scaling yet
+
+                    if X_processed is not None and y_processed is not None:
+                        st.session_state.X = X_processed # Store processed features (unscaled)
+                        st.session_state.y = y_processed # Store processed target
+                        st.session_state.feature_names = feature_names # Store feature names after dummies
+                        st.session_state.training_columns = feature_names # Use same names for training consistency check
+
+                        st.success("✅ Data successfully preprocessed and ready for modeling!")
+                        st.write(f"Features shape: {st.session_state.X.shape}")
+                        st.write(f"Target shape: {st.session_state.y.shape}")
+                        st.write("First 5 rows of processed features (X):")
+                        st.dataframe(st.session_state.X.head())
+                        st.info("Navigate to 'Model Training' to proceed.")
+                    else:
+                         st.error("Error during preprocessing. Cannot proceed to modeling.")
+
+                except Exception as e:
+                    st.error(f"Error during preprocessing: {e}")
+
+            else:
+                st.error(f"❌ Target variable '{target_col}' is not binary (has {df[target_col].nunique()} unique values). Classification requires a binary target (0/1). Cannot proceed to modeling.")
+                st.session_state.X = None # Reset states if target is invalid
+                st.session_state.y = None
+                st.session_state.feature_names = None
+                st.session_state.training_columns = None
         else:
-            st.warning("No recognized target column found in the dataset. Please ensure your data has a target variable.")
-        
-        # Correlation heatmap
-        st.subheader("Feature Correlations")
-        
-        # Preprocess before correlation
-        df_processed = preprocess_data(df)
-        
-        if st.checkbox("Show correlation heatmap", value=True):
-            try:
-                corr_fig = plot_correlation_heatmap(df_processed)
-                st.pyplot(corr_fig)
-            except Exception as e:
-                st.error(f"Error generating correlation heatmap: {e}")
-        
-        # Prepare for modeling
-        if target_col and df[target_col].nunique() == 2:
-            # Store for modeling
-            X = df_processed.drop(columns=[target_col])
-            y = df_processed[target_col]
-            
-            st.session_state.X = X
-            st.session_state.y = y
-            st.session_state.feature_names = X.columns
-            
-            st.success("Data is ready for modeling! Navigate to 'Model Training' to continue.")
-        else:
-            st.warning("Could not identify binary target variable for modeling.")
+            st.warning("⚠️ No recognized target column found (looked for: 'Heart_Attack_Risk', 'HeartAttackRisk', 'Risk', 'target', 'output'). Please ensure your data has a binary target variable with one of these names to enable model training.")
+
+        # Correlation heatmap (optional) - uses processed numeric features
+        st.subheader("Feature Correlations (Numeric Only)")
+        if st.checkbox("Show correlation heatmap", value=False):
+            if st.session_state.X is not None: # Check if preprocessing was successful
+                try:
+                    # We need the numeric columns from the *processed* data
+                    corr_fig = plot_correlation_heatmap(st.session_state.X)
+                    st.pyplot(corr_fig)
+                    plt.close(corr_fig) # Close the figure
+                except Exception as e:
+                    st.error(f"Error generating correlation heatmap: {e}")
+            else:
+                st.warning("Cannot generate heatmap as data preprocessing failed.")
 
 # Model Training page
 elif app_mode == "Model Training":
     st.markdown("<h2 class='sub-header'>Model Training and Evaluation</h2>", unsafe_allow_html=True)
-    
-    if st.session_state.X is None or st.session_state.y is None:
-        st.warning("Please complete data exploration first!")
+
+    if st.session_state.X is None or st.session_state.y is None or st.session_state.training_columns is None:
+        st.warning("⚠️ Please load and preprocess data with a valid binary target variable in 'Data Exploration' first!")
     else:
+        st.info(f"Data ready for training: {st.session_state.X.shape[0]} samples, {st.session_state.X.shape[1]} features.")
+        st.write("Feature Names:", st.session_state.training_columns)
+
+        # Train/Test Split
+        if st.session_state.X_train is None: # Only split if not already done
+             try:
+                 X_train, X_test, y_train, y_test = train_test_split(
+                     st.session_state.X, st.session_state.y,
+                     test_size=0.25, # Using 25% for test set
+                     random_state=42,
+                     stratify=st.session_state.y # Stratify based on target variable
+                 )
+                 st.session_state.X_train = X_train
+                 st.session_state.X_test = X_test
+                 st.session_state.y_train = y_train
+                 st.session_state.y_test = y_test
+                 st.success(f"✅ Data split into training ({X_train.shape[0]} samples) and testing ({X_test.shape[0]} samples).")
+             except Exception as e:
+                 st.error(f"Error during train/test split: {e}")
+                 # Prevent proceeding if split fails
+                 st.session_state.X_train = None
+
+
         # Train models button
-        if st.button("Train Models"):
-            with st.spinner("Training models... This may take a few minutes."):
-                try:
-                    start_time = time.time()
-                    models, X_train, X_test, y_train, y_test, scaler, X_train_scaled, X_test_scaled, training_times = train_models(
-                        st.session_state.X, st.session_state.y
-                    )
-                    
-                    # Store in session state
-                    st.session_state.models = models
-                    st.session_state.scaler = scaler
-                    st.session_state.X_test = X_test
-                    st.session_state.y_test = y_test
-                    st.session_state.X_train_scaled = X_train_scaled
-                    st.session_state.X_test_scaled = X_test_scaled
-                    st.session_state.training_times = training_times
-                    
-                    # Create SHAP explainer for XGBoost
+        if st.session_state.X_train is not None: # Check if split was successful
+            if st.button("🚀 Train Models", key="train_button"):
+                with st.spinner("Training models... This may take a few minutes depending on data size."):
                     try:
-                        st.session_state.explainer = shap.TreeExplainer(models['XGBoost']['model'])
+                        start_total_time = time.time()
+                        # Pass the training data to the train_models function
+                        models, scaler, training_times, X_train_scaled, y_train_resampled = train_models(
+                            st.session_state.X_train, st.session_state.y_train
+                        )
+
+                        st.session_state.models = models
+                        st.session_state.scaler = scaler # Store the fitted scaler
+                        st.session_state.training_times = training_times
+                        st.session_state.X_train_scaled = X_train_scaled # Store scaled training data (potentially needed for SHAP)
+
+                        # Evaluate models on the original (unseen) test set after scaling it
+                        st.write("Scaling the test set...")
+                        st.session_state.X_test_scaled = st.session_state.scaler.transform(st.session_state.X_test)
+
+                        st.write("Evaluating models on the test set...")
+                        st.session_state.model_results = evaluate_models(
+                             st.session_state.models,
+                             st.session_state.X_test_scaled,
+                             st.session_state.y_test
+                        )
+
+                        # Create SHAP explainer *only* for XGBoost after training (if XGBoost trained successfully)
+                        if 'XGBoost' in st.session_state.models and st.session_state.models['XGBoost']:
+                            try:
+                                xgb_model = st.session_state.models['XGBoost']['model']
+                                # Use a sample of the scaled training data for the explainer background
+                                # Adjust sample size as needed for performance vs. accuracy trade-off
+                                background_data_sample = shap.sample(st.session_state.X_train_scaled, 100)
+                                st.session_state.explainer = shap.TreeExplainer(xgb_model, background_data_sample)
+                                st.success("✅ SHAP explainer created for XGBoost model.")
+                            except Exception as e:
+                                st.error(f"Could not create SHAP explainer for XGBoost: {str(e)}")
+                                st.session_state.explainer = None
+                        else:
+                             st.session_state.explainer = None
+
+
+                        total_time = time.time() - start_total_time
+                        st.success(f"🎉 Models trained and evaluated successfully in {total_time:.2f} seconds!")
+                        st.info("Navigate to 'Model Comparison' or 'Risk Prediction'.")
+
                     except Exception as e:
-                        st.error(f"Could not create SHAP explainer: {str(e)}")
-                        st.session_state.explainer = None
-                    
-                    st.success(f"Models trained successfully in {sum(training_times.values()):.2f} seconds!")
-                except Exception as e:
-                    st.error(f"Error training models: {e}")
-        
-        # Show model results if available
-        if st.session_state.models is not None:
-            st.subheader("Model Evaluation")
-            
+                        st.error(f"❌ Error during model training or evaluation: {e}")
+                        # Clear potentially inconsistent states
+                        st.session_state.models = None
+                        st.session_state.scaler = None
+                        st.session_state.model_results = None
+
+
+        # Show individual model results if training is complete
+        if st.session_state.models is not None and st.session_state.model_results is not None:
+            st.markdown("<h3 class='sub-header'>Individual Model Evaluation</h3>", unsafe_allow_html=True)
+
+            model_names = list(st.session_state.models.keys())
+            if not model_names:
+                 st.warning("No models were trained successfully.")
+                 return # Exit this block if no models
+
             selected_model = st.selectbox(
-                "Select model to view results:",
-                list(st.session_state.models.keys())
+                "Select model to view detailed results:",
+                model_names,
+                key="model_select_eval"
             )
-            
-            model_data = st.session_state.models[selected_model]
-            
-            # Display metrics
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                # Accuracy
-                accuracy = accuracy_score(st.session_state.y_test, model_data['predictions'])
-                st.metric("Accuracy", f"{accuracy:.4f}")
-                
-                # Classification report
-                st.subheader("Classification Report")
-                report = classification_report(st.session_state.y_test, model_data['predictions'], output_dict=True)
-                report_df = pd.DataFrame(report).transpose()
-                st.write(report_df)
-            
-            with col2:
-                # Confusion matrix
-                st.subheader("Confusion Matrix")
-                cm_fig = plot_confusion_matrix(st.session_state.y_test, model_data['predictions'], selected_model)
-                st.pyplot(cm_fig)
-            
-            # Feature importance
-            st.subheader("Feature Importance")
-            importance_fig = plot_feature_importance(
-                model_data['model'], 
-                st.session_state.feature_names,
-                selected_model
-            )
-            
-            if importance_fig:
-                st.pyplot(importance_fig)
+
+            model_data = st.session_state.models.get(selected_model)
+            model_eval = st.session_state.model_results.get(selected_model)
+
+            if model_data and model_eval and model_eval.get('predictions') is not None:
+                st.markdown(f"#### Results for: {selected_model}")
+
+                # Display metrics
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    st.subheader("Performance Metrics")
+                    accuracy = accuracy_score(st.session_state.y_test, model_eval['predictions'])
+                    st.metric("Accuracy", f"{accuracy:.4f}")
+
+                    st.text("Classification Report:")
+                    try:
+                        report = classification_report(st.session_state.y_test, model_eval['predictions'], output_dict=True, zero_division=0)
+                        report_df = pd.DataFrame(report).transpose()
+                        st.dataframe(report_df.style.format("{:.3f}")) # Format report
+                    except Exception as e:
+                         st.error(f"Error generating classification report: {e}")
+
+                with col2:
+                    # Confusion matrix
+                    st.subheader("Confusion Matrix")
+                    cm_fig = plot_confusion_matrix_func(st.session_state.y_test, model_eval['predictions'], selected_model)
+                    st.pyplot(cm_fig)
+                    plt.close(cm_fig) # Close the figure
+
+                # Feature importance
+                st.subheader("Feature Importance")
+                importance_fig = plot_feature_importance(
+                    model_data['model'],
+                    st.session_state.training_columns, # Use the stored feature names
+                    selected_model
+                )
+                if importance_fig:
+                    st.pyplot(importance_fig)
+                    plt.close(importance_fig) # Close the figure
+
+                # Clinical context analysis
+                st.subheader("Clinical Context Analysis")
+                try:
+                    feature_df, clinical_fig1, clinical_fig2, actionability_score = clinical_feature_analysis(
+                        model_data['model'],
+                        st.session_state.training_columns # Use stored feature names
+                    )
+
+                    col_clin1, col_clin2 = st.columns([2, 1])
+
+                    with col_clin1:
+                        st.pyplot(clinical_fig1)
+                        plt.close(clinical_fig1)
+
+                    with col_clin2:
+                        st.pyplot(clinical_fig2)
+                        plt.close(clinical_fig2)
+                        st.metric("Actionability Score", f"{actionability_score:.3f}",
+                                help="Indicates the relative importance of modifiable/semi-modifiable factors (higher is more actionable). Ranges from 0 to 1.")
+
+                    st.subheader("Top 5 Modifiable Risk Factors")
+                    top_modifiable = feature_df[feature_df['Category'] == 'Modifiable'].head(5)
+                    if not top_modifiable.empty:
+                        st.dataframe(top_modifiable[['Feature', 'Importance']].style.format({'Importance': '{:.4f}'}))
+                    else:
+                        st.write("No modifiable factors identified in the top features for this model.")
+
+                    st.markdown("""
+                    <div class='info-box'>
+                    <p><strong>Interpretation:</strong> The 'Actionability Score' reflects the model's reliance on factors that can potentially be changed (lifestyle, medication adherence). Focusing on the 'Top Modifiable Risk Factors' identified by the model may offer the best routes for risk reduction.</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    # Download feature importance data
+                    st.subheader("Download Clinical Analysis Data")
+                    csv_clinical = feature_df.to_csv(index=False).encode('utf-8')
+                    st.download_button(
+                        label="Download Feature Importance & Modifiability (CSV)",
+                        data=csv_clinical,
+                        file_name=f"{selected_model}_clinical_feature_analysis.csv",
+                        mime='text/csv',
+                    )
+                except Exception as e:
+                    st.error(f"Error during clinical context analysis: {e}")
+
             else:
-                st.info(f"Feature importance visualization not available for {selected_model}.")
-            
-            # Clinical context analysis
-            st.subheader("Clinical Context Analysis")
-            
-            clinical_features, clinical_fig1, clinical_fig2, actionability_score = clinical_feature_analysis(
-                model_data['model'],
-                st.session_state.feature_names
-            )
-            
-            col1, col2 = st.columns([2, 1])
-            
-            with col1:
-                st.pyplot(clinical_fig1)
-            
-            with col2:
-                st.pyplot(clinical_fig2)
-                st.metric("Actionability Score", f"{actionability_score:.2f}", 
-                          help="Higher score means more potential for risk reduction through lifestyle interventions")
-            
-            # Top modifiable risk factors
-            st.subheader("Top Modifiable Risk Factors")
-            top_modifiable = clinical_features[clinical_features['Category'] == 'Modifiable'].head(5)
-            
-            for i, row in top_modifiable.iterrows():
-                st.write(f"- **{row['Feature']}** (Importance: {row['Importance']:.4f})")
-            
-            st.markdown("""
-            <div class='info-box'>
-            <p><strong>What This Means:</strong> The above factors are modifiable through lifestyle changes and medical interventions. Focus on these for risk reduction.</p>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            # Download model results
-            st.subheader("Download Results")
-            
-            def get_table_download_link(df, filename, text):
-                csv = df.to_csv(index=False)
-                b64 = base64.b64encode(csv.encode()).decode()
-                href = f'<a href="data:file/csv;base64,{b64}" download="{filename}.csv">{text}</a>'
-                return href
-            
-            st.markdown(get_table_download_link(clinical_features, 
-                                                f"{selected_model}_feature_importance", 
-                                                "Download Feature Importance Data"), 
-                       unsafe_allow_html=True)
+                st.warning(f"Results for model '{selected_model}' are not available or evaluation failed.")
+
 
 # Model Comparison page
 elif app_mode == "Model Comparison":
     st.markdown("<h2 class='sub-header'>Model Comparison</h2>", unsafe_allow_html=True)
-    
-    if st.session_state.models is None:
-        st.warning("Please train models first!")
+
+    if st.session_state.models is None or st.session_state.model_results is None:
+        st.warning("⚠️ Please train and evaluate models on the 'Model Training' page first!")
     else:
-        st.write("Compare the performance of different models to select the best one for heart attack risk prediction.")
-        
+        st.info("Comparing the performance of all successfully trained models on the test set.")
+
         # Metrics comparison
         st.subheader("Performance Metrics Comparison")
-        
+
         metrics = []
-        for model_name, model_data in st.session_state.models.items():
-            y_true = st.session_state.y_test
-            y_pred = model_data['predictions']
-            y_prob = model_data['probabilities']
-            
-            # Calculate metrics
-            acc = accuracy_score(y_true, y_pred)
-            cm = confusion_matrix(y_true, y_pred)
-            tn, fp, fn, tp = cm.ravel()
-            
-            sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
-            specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
-            precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-            f1 = 2 * (precision * sensitivity) / (precision + sensitivity) if (precision + sensitivity) > 0 else 0
-            
-            fpr, tpr, _ = roc_curve(y_true, y_prob)
-            roc_auc = auc(fpr, tpr)
-            
-            metrics.append({
-                'Model': model_name,
-                'Accuracy': acc,
-                'Sensitivity': sensitivity,
-                'Specificity': specificity,
-                'Precision': precision,
-                'F1 Score': f1,
-                'AUC': roc_auc
-            })
-        
-        metrics_df = pd.DataFrame(metrics)
-        metrics_df = metrics_df.set_index('Model')
-        
-        # Format the values
-        formatted_df = metrics_df.applymap(lambda x: f"{x:.4f}")
-        
-        # Add styling
-        st.dataframe(formatted_df.style.highlight_max(axis=0, color='#AED6F1'))
-        
-        # ROC Curve Comparison
-        st.subheader("ROC Curve Comparison")
-        
-        # Prepare probabilities dict for plotting
-        probas = {model_name: model_data['probabilities'] for model_name, model_data in st.session_state.models.items()}
-        
-        # Plot ROC curves
-        roc_fig = plot_roc_curve(st.session_state.y_test, probas, st.session_state.models)
-        st.pyplot(roc_fig)
-        
-        # Precision-Recall Curve
-        st.subheader("Precision-Recall Curve Comparison")
-        pr_fig = plot_precision_recall_curve(st.session_state.y_test, probas, st.session_state.models)
-        st.pyplot(pr_fig)
-        
+        for model_name, eval_data in st.session_state.model_results.items():
+            if eval_data and eval_data.get('predictions') is not None and eval_data.get('probabilities') is not None:
+                y_true = st.session_state.y_test
+                y_pred = eval_data['predictions']
+                y_prob = eval_data['probabilities']
+
+                # Calculate metrics safely
+                try:
+                    acc = accuracy_score(y_true, y_pred)
+                    report = classification_report(y_true, y_pred, output_dict=True, zero_division=0)
+                    precision_1 = report.get('1', {}).get('precision', 0)
+                    recall_1 = report.get('1', {}).get('recall', 0) # Sensitivity for class 1
+                    f1_1 = report.get('1', {}).get('f1-score', 0)
+
+                    # Specificity for class 0
+                    tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
+                    specificity_0 = tn / (tn + fp) if (tn + fp) > 0 else 0
+
+                    fpr, tpr, _ = roc_curve(y_true, y_prob)
+                    roc_auc = auc(fpr, tpr)
+
+                    metrics.append({
+                        'Model': model_name,
+                        'Accuracy': acc,
+                        'Sensitivity (Recall_1)': recall_1,
+                        'Specificity (Recall_0)': specificity_0, # Approximated by recall of class 0
+                        'Precision_1': precision_1,
+                        'F1_Score_1': f1_1,
+                        'AUC': roc_auc
+                    })
+                except Exception as e:
+                    st.warning(f"Could not calculate metrics for {model_name}: {e}")
+
+        if metrics:
+            metrics_df = pd.DataFrame(metrics).set_index('Model')
+            st.dataframe(metrics_df.style.format("{:.4f}").highlight_max(axis=0, color='#AED6F1')) # Highlight best in each column
+
+            # Model selection recommendation based on AUC
+            st.subheader("Model Recommendation")
+            try:
+                 best_model_name = metrics_df['AUC'].idxmax()
+                 best_auc = metrics_df.loc[best_model_name, 'AUC']
+                 st.session_state.best_model_name = best_model_name # Store the name
+                 st.markdown(f"""
+                 <div class='info-box'>
+                 <p>Based on the Area Under the ROC Curve (AUC), the recommended model is:</p>
+                 <h3 style='color: #1E88E5;'>{best_model_name}</h3>
+                 <p>This model achieves the highest AUC score of <b>{best_auc:.4f}</b> on the test set, indicating strong overall discrimination ability between low and high risk classes.</p>
+                 <p><i>Note: The 'best' model might depend on specific needs (e.g., prioritizing sensitivity or specificity). Review all metrics carefully.</i></p>
+                 </div>
+                 """, unsafe_allow_html=True)
+            except Exception as e:
+                st.error(f"Could not determine best model: {e}")
+                st.session_state.best_model_name = None
+
+        else:
+            st.warning("No model metrics available to compare.")
+
+        # Plotting Comparisons
+        st.subheader("Graphical Comparison")
+        col_graph1, col_graph2 = st.columns(2)
+
+        with col_graph1:
+             st.markdown("#### ROC Curve Comparison")
+             roc_fig = plot_roc_curve_func(st.session_state.y_test, st.session_state.model_results)
+             st.pyplot(roc_fig)
+             plt.close(roc_fig)
+
+        with col_graph2:
+            st.markdown("#### Precision-Recall Curve Comparison")
+            pr_fig = plot_precision_recall_curve_func(st.session_state.y_test, st.session_state.model_results)
+            st.pyplot(pr_fig)
+            plt.close(pr_fig)
+
         # Training time comparison if available
         if st.session_state.training_times:
             st.subheader("Training Time Comparison")
-            times_df = pd.DataFrame.from_dict(st.session_state.training_times, orient='index', columns=['Time (s)'])
-            times_df = times_df.reset_index().rename(columns={'index': 'Model'})
-            
-            fig, ax = plt.subplots(figsize=(10, 6))
-            sns.barplot(x='Time (s)', y='Model', data=times_df, palette='viridis', ax=ax)
-            plt.title('Model Training Time Comparison')
-            plt.xlabel('Time (seconds)')
-            plt.tight_layout()
-            st.pyplot(fig)
-        
-        # Model selection recommendation
-        st.subheader("Model Recommendation")
-        
-        # Find the best model based on AUC (can change to other metrics)
-        best_model_name = metrics_df['AUC'].idxmax()
-        best_auc = metrics_df.loc[best_model_name, 'AUC']
-        
-        st.markdown(f"""
-        <div class='info-box'>
-        <p>Based on the comparison metrics, the recommended model is:</p>
-        <h3 style='color: #1E88E5;'>{best_model_name}</h3>
-        <p>This model achieves the highest AUC score of {float(best_auc):.4f}, indicating strong discriminative ability 
-        between heart attack risk classes.</p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # SHAP Summary Plot for best model
-        st.subheader(f"SHAP Feature Impact for {best_model_name}")
-        
-        if st.button("Generate SHAP Analysis (may take a minute)"):
-            with st.spinner("Generating SHAP values..."):
-                try:
-                    # Use a sample of the test data for computation efficiency
-                    sample_size = min(100, len(st.session_state.X_test_scaled))
-                    X_sample = st.session_state.X_test_scaled[:sample_size]
-                    
-                    if best_model_name == 'XGBoost' and st.session_state.explainer is not None:
-                        explainer = st.session_state.explainer
-                        shap_values = explainer.shap_values(X_sample)
-                    else:
-                        # Create explainer for the best model
-                        best_model = st.session_state.models[best_model_name]['model']
-                        explainer = shap.Explainer(best_model, st.session_state.X_train_scaled)
-                        shap_values = explainer.shap_values(X_sample)
-                    
-                    # Create and display SHAP summary plot
-                    fig, ax = plt.subplots(figsize=(10, 8))
-                    shap.summary_plot(shap_values, X_sample, feature_names=st.session_state.feature_names, show=False)
-                    plt.title(f"SHAP Feature Impact for {best_model_name}")
-                    plt.tight_layout()
-                    st.pyplot(fig)
-                    
-                    st.markdown("""
-                    <div class='info-box'>
-                    <p><strong>How to interpret:</strong> Features are ordered by their global importance. 
-                    Red points indicate higher feature values, while blue points indicate lower feature values. 
-                    Points further to the right have a higher positive impact on risk prediction.</p>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                except Exception as e:
-                    st.error(f"Error generating SHAP plot: {e}")
+            try:
+                times_df = pd.DataFrame.from_dict(st.session_state.training_times, orient='index', columns=['Time (s)'])
+                times_df = times_df.reset_index().rename(columns={'index': 'Model'}).sort_values('Time (s)')
+
+                fig_time, ax_time = plt.subplots(figsize=(10, 6))
+                sns.barplot(x='Time (s)', y='Model', data=times_df, palette='viridis', ax=ax_time)
+                plt.title('Model Training Time Comparison', fontsize=16)
+                plt.xlabel('Time (seconds)', fontsize=12)
+                plt.ylabel('Model', fontsize=12)
+                plt.tight_layout()
+                st.pyplot(fig_time)
+                plt.close(fig_time)
+            except Exception as e:
+                st.error(f"Could not plot training times: {e}")
+
+
+        # SHAP Summary Plot for best model (if it's XGBoost and explainer exists)
+        st.subheader("Overall Feature Impact (SHAP Summary)")
+        best_model_name_for_shap = st.session_state.get('best_model_name')
+
+        # Allow user to select model for SHAP or default to best
+        shap_model_select = st.selectbox(
+            "Select model for SHAP Summary Plot (if available):",
+            list(st.session_state.models.keys()),
+            index=list(st.session_state.models.keys()).index(best_model_name_for_shap) if best_model_name_for_shap in st.session_state.models else 0,
+            key="shap_summary_model_select"
+        )
+
+        # Currently only works well if the selected model is XGBoost AND the explainer was created during training
+        if shap_model_select == 'XGBoost' and st.session_state.explainer is not None:
+            if st.button(f"Generate SHAP Summary Plot for {shap_model_select}", key="shap_summary_button"):
+                 with st.spinner("Generating SHAP summary plot..."):
+                    try:
+                        # Use a sample of the scaled test data for the summary plot
+                        sample_size = min(500, len(st.session_state.X_test_scaled)) # Use up to 500 samples
+                        X_sample_shap = shap.sample(st.session_state.X_test_scaled, sample_size, random_state=42) # Use consistent sample
+
+                        # Calculate SHAP values for the sample
+                        shap_values_summary = st.session_state.explainer.shap_values(X_sample_shap)
+
+                        # Create and display SHAP summary plot
+                        fig_shap, ax_shap = plt.subplots(figsize=(12, 8)) # Adjust size
+                        shap.summary_plot(shap_values_summary, X_sample_shap,
+                                          feature_names=st.session_state.training_columns, # Use stored feature names
+                                          show=False, plot_size=None) # Let matplotlib handle size via subplots
+                        plt.title(f"SHAP Feature Impact Summary for {shap_model_select}", fontsize=16)
+                        plt.tight_layout()
+                        st.pyplot(fig_shap)
+                        plt.close(fig_shap) # Close the figure
+
+                        st.markdown("""
+                        <div class='info-box'>
+                        <p><strong>How to interpret SHAP Summary Plot:</strong> Each point is a SHAP value for a feature and an instance. Features are ranked by the sum of absolute SHAP values across all samples (global importance).</p>
+                        <ul>
+                            <li><b>Position on y-axis:</b> Determines the feature.</li>
+                            <li><b>Position on x-axis:</b> Shows the impact on the model output (prediction). Positive values push the prediction higher (towards risk=1), negative values push it lower.</li>
+                            <li><b>Color:</b> Represents the value of the feature for that instance (Red=High, Blue=Low).</li>
+                        </ul>
+                        <p>For example, high values (red points) for a feature on the right side indicate that high values of that feature increase the predicted risk.</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                    except Exception as e:
+                        st.error(f"❌ Error generating SHAP summary plot for {shap_model_select}: {e}")
+                        st.error("Ensure the model and test data are compatible with the SHAP explainer.")
+
+        elif shap_model_select != 'XGBoost':
+             st.info(f"Automatic SHAP summary plot generation is currently optimized for the XGBoost model trained by this app. For {shap_model_select}, manual SHAP analysis might be needed.")
+        else: # XGBoost selected but explainer is None
+             st.warning("XGBoost explainer was not created successfully during training. Cannot generate SHAP summary plot.")
+
 
 # Risk Prediction page
 elif app_mode == "Risk Prediction":
     st.markdown("<h2 class='sub-header'>Personalized Heart Attack Risk Prediction</h2>", unsafe_allow_html=True)
-    
-    if st.session_state.models is None or st.session_state.scaler is None:
-        st.warning("Please train models first!")
+
+    if st.session_state.models is None or st.session_state.scaler is None or st.session_state.training_columns is None:
+        st.warning("⚠️ Please train models on the 'Model Training' page first!")
     else:
-        st.write("Enter patient information to get a personalized heart attack risk prediction.")
-        
-        # Select model for prediction
+        st.write("Use the form below to enter patient information or upload a CSV for batch prediction.")
+
+        # Select model for prediction - default to best if available
+        model_list = list(st.session_state.models.keys())
+        best_model_idx = 0 # Default to first model
+        if st.session_state.best_model_name and st.session_state.best_model_name in model_list:
+            best_model_idx = model_list.index(st.session_state.best_model_name)
+
         model_name = st.selectbox(
             "Select model for prediction:",
-            list(st.session_state.models.keys()),
-            index=list(st.session_state.models.keys()).index("XGBoost") if "XGBoost" in st.session_state.models else 0
+            model_list,
+            index=best_model_idx,
+            key="predict_model_select"
         )
-        
+
         selected_model = st.session_state.models[model_name]['model']
-        
+        # Get the SHAP explainer IF the selected model is XGBoost AND the explainer exists
+        explainer_for_prediction = st.session_state.explainer if model_name == "XGBoost" and st.session_state.explainer else None
+        if model_name == "XGBoost" and st.session_state.explainer is None:
+            st.warning("XGBoost selected, but SHAP explainer is not available for detailed impact analysis.")
+
+
         # Create tabs for different input methods
-        tab1, tab2 = st.tabs(["Form Input", "CSV Upload"])
-        
+        tab1, tab2 = st.tabs(["👤 Single Patient Input", "📁 Batch Prediction (CSV)"])
+
         with tab1:
             st.subheader("Enter Patient Information")
-            
-            # Create columns for better layout
-            col1, col2, col3 = st.columns(3)
-            
-            # Create dictionary to hold input values
-            input_data = {}
-            
-            # Demographic information
-            with col1:
-                st.markdown("##### Demographics")
-                input_data['Age'] = st.number_input("Age", min_value=18, max_value=120, value=50)
-                input_data['Sex'] = st.selectbox("Sex", ["Male", "Female"])
-                
-            # Health metrics
-            with col2:
-                st.markdown("##### Health Metrics")
-                input_data['Cholesterol'] = st.number_input("Cholesterol (mg/dL)", min_value=100, max_value=500, value=200)
-                input_data['Blood_Pressure'] = st.number_input("Systolic Blood Pressure (mmHg)", min_value=80, max_value=220, value=120)
-                input_data['Heart_Rate'] = st.number_input("Heart Rate (bpm)", min_value=40, max_value=200, value=75)
-                input_data['BMI'] = st.number_input("BMI", min_value=10.0, max_value=50.0, value=24.5, step=0.1)
-                
-            # Lifestyle and conditions
-            with col3:
-                st.markdown("##### Lifestyle & Conditions")
-                input_data['Smoking'] = st.selectbox("Smoking Status", ["Never", "Former", "Current"])
-                input_data['Diabetes'] = st.selectbox("Diabetes", ["No", "Yes"])
-                input_data['Family_History'] = st.selectbox("Family History of Heart Disease", ["No", "Yes"])
-                input_data['Exercise_Hours'] = st.slider("Exercise (hours/week)", 0.0, 20.0, 3.0, 0.5)
-                input_data['Stress_Level'] = st.slider("Stress Level (1-10)", 1, 10, 5)
-            
-            # Predict button
-            if st.button("Predict Heart Attack Risk"):
+
+            # Use form for better organization and submission handling
+            with st.form(key="prediction_form"):
+                col1, col2, col3 = st.columns(3)
+
+                # Create dictionary to hold input values dynamically based on original features
+                input_data = {}
+                # Assuming st.session_state.data holds the original dataframe structure
+                original_df_columns = load_sample_data().columns # Use sample data structure as template
+                # Find the target column used during training
+                target_col_form = None
+                possible_targets = ['Heart_Attack_Risk', 'HeartAttackRisk', 'Risk', 'target', 'output']
+                for col in possible_targets:
+                    if col in original_df_columns:
+                         target_col_form = col
+                         break
+
+                current_col_index = 0
+                cols_per_column = (len(original_df_columns) - (1 if target_col_form else 0)) // 3 + 1
+                column_widgets = [col1, col2, col3]
+
+
+                # Dynamically create input fields based on expected features (from sample or uploaded data)
+                if st.session_state.data is not None:
+                    df_template = st.session_state.data # Use loaded data structure
+                else:
+                    df_template = load_sample_data() # Fallback to sample
+
+                original_features = [col for col in df_template.columns if col != target_col_form]
+
+                feature_inputs = {}
+                for i, feature in enumerate(original_features):
+                     # Determine which column to place the widget in
+                     target_column = column_widgets[i // cols_per_column]
+
+                     with target_column:
+                        # Infer input type based on dtype in the original dataframe
+                        if pd.api.types.is_numeric_dtype(df_template[feature]):
+                            min_val = float(df_template[feature].min())
+                            max_val = float(df_template[feature].max())
+                            mean_val = float(df_template[feature].mean())
+                            # Add some buffer to min/max, ensure max > min
+                            min_val_input = min_val - (abs(min_val) * 0.1) if min_val > 0 else min_val * 1.1
+                            max_val_input = max_val * 1.1 if max_val > 0 else max_val * 0.9
+                            if max_val_input <= min_val_input : max_val_input = min_val_input + 1 # Basic check
+
+                            step = 1.0 if pd.api.types.is_integer_dtype(df_template[feature]) else 0.1
+                            value_format = "%.0f" if step == 1.0 else "%.1f"
+
+                            # Use number_input or slider based on range/type
+                            if max_val - min_val > 20 and step==1.0: # Use number input for large integer ranges
+                                 feature_inputs[feature] = st.number_input(
+                                     f"{feature}",
+                                     min_value=round(min_val_input),
+                                     max_value=round(max_val_input),
+                                     value=round(mean_val),
+                                     step=round(step),
+                                     key=f"input_{feature}"
+                                 )
+                            elif max_val - min_val <= 20 and step >= 1: # Use slider for smaller integer ranges (like Stress Level)
+                                feature_inputs[feature] = st.slider(
+                                    f"{feature}",
+                                     min_value=int(min_val),
+                                     max_value=int(max_val),
+                                     value=int(round(mean_val)),
+                                     step=int(step),
+                                     key=f"input_{feature}"
+                                )
+                            else: # Use number_input for float or slider for small float ranges
+                                if max_val - min_val < 50: # Heuristic for using slider for floats
+                                     feature_inputs[feature] = st.slider(
+                                         f"{feature}",
+                                         min_value=round(min_val_input, 1),
+                                         max_value=round(max_val_input, 1),
+                                         value=round(mean_val, 1),
+                                         step=round(step, 1),
+                                         key=f"input_{feature}",
+                                         format=value_format
+                                     )
+                                else:
+                                     feature_inputs[feature] = st.number_input(
+                                         f"{feature}",
+                                         min_value=round(min_val_input, 1),
+                                         # max_value=round(max_val_input, 1), # Max value causes issues sometimes
+                                         value=round(mean_val, 1),
+                                         step=round(step, 1),
+                                         key=f"input_{feature}",
+                                         format=value_format
+                                     )
+
+                        elif pd.api.types.is_object_dtype(df_template[feature]) or pd.api.types.is_categorical_dtype(df_template[feature]):
+                            options = df_template[feature].unique().tolist()
+                            # Try to find a reasonable default, like 'No' or 'Never' or the mode
+                            default_option = options[0]
+                            if 'No' in options: default_option = 'No'
+                            if 'Never' in options: default_option = 'Never'
+                            if 'Female' in options and 'Male' in options: default_option = 'Female' # Example default
+
+                            feature_inputs[feature] = st.selectbox(f"{feature}", options=options, index=options.index(default_option), key=f"input_{feature}")
+                        else:
+                             # Fallback for other types
+                             feature_inputs[feature] = st.text_input(f"{feature}", value=str(df_template[feature].iloc[0]), key=f"input_{feature}")
+
+
+                submitted = st.form_submit_button("⚡ Predict Heart Attack Risk")
+
+            # --- Prediction Execution (outside the form) ---
+            if submitted:
                 with st.spinner("Calculating risk..."):
                     try:
-                        # Get explainer if available (only for XGBoost in this case)
-                        explainer = st.session_state.explainer if model_name == "XGBoost" else None
-                        
-                        # Make prediction using selected model
-                        prediction, probability, shap_values = predict_individual_risk(
-                            input_data, 
+                        # Make prediction using selected model and the input data
+                        prediction, probability, shap_explanation = predict_individual_risk(
+                            feature_inputs, # Pass the dictionary from the form
                             selected_model,
-                            st.session_state.X.columns,
+                            st.session_state.training_columns, # Crucial: use columns from training
                             st.session_state.scaler,
-                            explainer
+                            explainer_for_prediction,
+                             st.session_state.training_columns # Pass original feature names (post-dummies)
                         )
-                        
-                        # Display results
-                        st.subheader("Risk Assessment Results")
-                        
-                        col1, col2 = st.columns([1, 2])
-                        
-                        with col1:
-                            if prediction == 1:
-                                st.markdown("""
-                                <div style="background-color:#FF5252; padding:20px; border-radius:10px; text-align:center;">
-                                <h2 style="color:white;">HIGH RISK</h2>
-                                </div>
-                                """, unsafe_allow_html=True)
-                            else:
-                                st.markdown("""
-                                <div style="background-color:#4CAF50; padding:20px; border-radius:10px; text-align:center;">
-                                <h2 style="color:white;">LOW RISK</h2>
-                                </div>
-                                """, unsafe_allow_html=True)
-                            
-                            # Probability gauge
-                            fig, ax = plt.subplots(figsize=(4, 0.8))
-                            plt.axis('off')
-                            
-                            # Create colored background
-                            background = np.zeros((1, 100, 3))
-                            for i in range(100):
-                                if i < 25:
-                                    background[0, i] = [0, 1, 0]  # Green
-                                elif i < 50:
-                                    background[0, i] = [1, 1, 0]  # Yellow
-                                elif i < 75:
-                                    background[0, i] = [1, 0.5, 0]  # Orange
+
+                        if prediction is not None:
+                            st.markdown("<h3 class='sub-header'>Risk Assessment Results</h3>", unsafe_allow_html=True)
+
+                            col_res1, col_res2 = st.columns([1, 2]) # Adjust column ratio
+
+                            with col_res1:
+                                st.markdown("#### Overall Risk")
+                                if prediction == 1:
+                                    st.markdown("<div class='risk-high'><p class='risk-text'>HIGH RISK</p></div>", unsafe_allow_html=True)
                                 else:
-                                    background[0, i] = [1, 0, 0]  # Red
-                            
-                            plt.imshow(background)
-                            
-                            # Add marker for probability
-                            marker_pos = int(probability * 100)
-                            plt.plot(marker_pos, 0, 'v', color='black', markersize=12)
-                            
-                            # Add percentage text
-                            plt.text(50, 0, f"{probability*100:.1f}%", 
-                                    fontsize=12, fontweight='bold', 
-                                    ha='center', va='center',
-                                    bbox=dict(facecolor='white', alpha=0.8))
-                            
-                            st.pyplot(fig)
-                            
-                            # Risk level description
-                            if probability < 0.25:
-                                risk_level = "Low Risk"
-                                recommendation = "Continue with healthy lifestyle."
-                            elif probability < 0.5:
-                                risk_level = "Moderate Risk"
-                                recommendation = "Consider lifestyle improvements."
-                            elif probability < 0.75:
-                                risk_level = "High Risk"
-                                recommendation = "Consult with healthcare provider soon."
-                            else:
-                                risk_level = "Very High Risk"
-                                recommendation = "Urgent medical consultation recommended!"
-                            
-                            st.metric("Risk Probability", f"{probability*100:.1f}%")
-                            st.metric("Risk Level", risk_level)
-                            st.info(f"Recommendation: {recommendation}")
-                        
-                        with col2:
-                            # Feature impact
-                            st.subheader("Feature Impact on Prediction")
-                            
-                            if shap_values is not None:
-                                # Create waterfall plot
-                                fig, ax = plt.subplots(figsize=(10, 8))
-                                shap.waterfall_plot(shap.Explanation(
-                                    values=shap_values[0],
-                                    base_values=explainer.expected_value,
-                                    feature_names=st.session_state.feature_names
-                                ), max_display=10, show=False)
-                                plt.title("Top Factors Influencing Risk Prediction")
-                                plt.tight_layout()
-                                st.pyplot(fig)
-                                
-                                st.markdown("""
+                                    st.markdown("<div class='risk-low'><p class='risk-text'>LOW RISK</p></div>", unsafe_allow_html=True)
+
+                                # Probability gauge - simple text version for robustness
+                                st.metric("Risk Probability", f"{probability*100:.1f}%")
+
+                                # Risk level description
+                                if probability < 0.25:
+                                    risk_level = "Low"
+                                    recommendation = "Risk appears low. Continue healthy habits."
+                                elif probability < 0.5:
+                                    risk_level = "Moderate"
+                                    recommendation = "Risk is moderate. Consider lifestyle improvements and discuss with your doctor."
+                                elif probability < 0.75:
+                                    risk_level = "High"
+                                    recommendation = "Risk appears high. Consult with a healthcare provider for evaluation and guidance."
+                                else:
+                                    risk_level = "Very High"
+                                    recommendation = "Risk appears very high. Urgent medical consultation is strongly recommended."
+
+                                st.metric("Risk Level Category", risk_level)
+                                st.info(f"💡 Recommendation: {recommendation}")
+
+                            with col_res2:
+                                # Feature impact (SHAP Waterfall)
+                                st.markdown("#### Key Factors Influencing Prediction")
+
+                                if shap_explanation is not None and model_name == "XGBoost":
+                                    try:
+                                        fig_waterfall, ax_waterfall = plt.subplots(figsize=(10, 6)) # Adjust size
+                                        shap.waterfall_plot(shap_explanation, max_display=10, show=False)
+                                        plt.title(f"SHAP Waterfall Plot for {model_name} Prediction", fontsize=14)
+                                        plt.tight_layout()
+                                        st.pyplot(fig_waterfall)
+                                        plt.close(fig_waterfall) # Close figure
+
+                                        st.markdown("""
+                                        <div class='info-box' style='font-size: 0.9em;'>
+                                        <p><strong>How to interpret Waterfall Plot:</strong> This plot shows how each feature contributes to moving the prediction from the baseline (average prediction) to the final prediction for this individual.</p>
+                                        <ul><li><b>Red bars:</b> Features pushing the risk prediction higher.</li><li><b>Blue bars:</b> Features pushing the risk prediction lower.</li><li><b>Length of bar:</b> Magnitude of the feature's impact.</li></ul>
+                                        <p>Focus on the most impactful factors (longest bars), especially the red ones if the risk is high, to understand potential areas for intervention.</p>
+                                        </div>
+                                        """, unsafe_allow_html=True)
+                                    except Exception as e:
+                                        st.error(f"Error plotting SHAP waterfall: {e}")
+                                        st.info("Detailed feature impact analysis using SHAP waterfall plot is not available for this prediction.")
+
+                                elif model_name == "XGBoost":
+                                     st.warning("SHAP explainer not available for XGBoost. Cannot show waterfall plot.")
+                                else:
+                                     st.info(f"Detailed SHAP feature impact analysis is currently only configured for XGBoost. Showing general feature importance for {model_name} instead.")
+                                     # Show general feature importance as fallback
+                                     importance_fig_pred = plot_feature_importance(
+                                         selected_model,
+                                         st.session_state.training_columns,
+                                         f"General Importance - {model_name}",
+                                         top_n=10 # Show top 10
+                                     )
+                                     if importance_fig_pred:
+                                        st.pyplot(importance_fig_pred)
+                                        plt.close(importance_fig_pred)
+
+
+                            # Personalized recommendations (simplified example)
+                            st.markdown("<h3 class='sub-header'>Personalized Considerations</h3>", unsafe_allow_html=True)
+                            st.markdown("""
                                 <div class='info-box'>
-                                <p><strong>How to interpret:</strong> Red bars increase risk, blue bars decrease risk. 
-                                The length of each bar shows the magnitude of impact.</p>
+                                <ul>
+                                    <li>Review the factors identified as increasing risk (red bars in SHAP plot if available, or top factors from general importance).</li>
+                                    <li>Discuss modifiable factors like <b>Blood Pressure, Cholesterol, BMI, Smoking status, Exercise levels, and Stress</b> with your healthcare provider.</li>
+                                    <li>Non-modifiable factors like <b>Age, Sex, and Family History</b> are important for context but cannot be changed.</li>
+                                </ul>
                                 </div>
-                                """, unsafe_allow_html=True)
-                            else:
-                                st.info("Detailed feature impact analysis not available for this model.")
-                        
-                        # Personalized recommendations
-                        st.subheader("Personalized Recommendations")
-                        
-                        # Define risk factors and recommendations
-                        modifiable_factors = {
-                            'Cholesterol': {
-                                'high': {'threshold': 200, 'recommendation': "Consider dietary changes to reduce cholesterol and speak with a healthcare provider about medication options if appropriate."},
-                                'normal': {'recommendation': "Maintain healthy cholesterol levels through a balanced diet."}
-                            },
-                            'Blood_Pressure': {
-                                'high': {'threshold': 130, 'recommendation': "Monitor blood pressure regularly. Consider the DASH diet, reducing sodium, regular exercise, and stress management."},
-                                'normal': {'recommendation': "Continue maintaining healthy blood pressure with regular monitoring."}
-                            },
-                            'BMI': {
-                                'high': {'threshold': 25, 'recommendation': "Focus on achieving a healthier weight through balanced nutrition and regular physical activity."},
-                                'normal': {'recommendation': "Maintain healthy weight through continued balanced diet and regular exercise."}
-                            },
-                            'Smoking': {
-                                'risk': {'values': ['Current'], 'recommendation': "Quitting smoking is one of the most important steps to reduce heart attack risk. Consider cessation programs or speak with a healthcare provider about support options."},
-                                'former': {'values': ['Former'], 'recommendation': "Great job quitting smoking! Your risk continues to decrease the longer you remain smoke-free."},
-                                'none': {'recommendation': "Continue to avoid smoking to maintain your lower risk profile."}
-                            },
-                            'Exercise_Hours': {
-                                'low': {'threshold': 2.5, 'comparison': '<', 'recommendation': "Aim for at least 150 minutes (2.5 hours) of moderate exercise per week, as recommended by health guidelines."},
-                                'normal': {'recommendation': "Great job staying active! Continue your regular exercise routine."}
-                            },
-                            'Stress_Level': {
-                                'high': {'threshold': 7, 'recommendation': "Consider stress management techniques such as mindfulness, meditation, or speaking with a mental health professional."},
-                                'normal': {'recommendation': "Continue practicing stress management for heart health."}
-                            }
-                        }
-                        
-                        recommendations = []
-                        
-                        # Generate personalized recommendations based on input data
-                        for factor, conditions in modifiable_factors.items():
-                            if factor in input_data:
-                                value = input_data[factor]
-                                
-                                # Handle different types of comparisons
-                                if 'high' in conditions and 'threshold' in conditions['high']:
-                                    threshold = conditions['high']['threshold']
-                                    comparison = conditions['high'].get('comparison', '>')
-                                    
-                                    if comparison == '>' and value > threshold:
-                                        recommendations.append(f"**{factor.replace('_', ' ')}**: {conditions['high']['recommendation']}")
-                                    elif comparison == '<' and value < threshold:
-                                        recommendations.append(f"**{factor.replace('_', ' ')}**: {conditions['low']['recommendation']}")
-                                    elif comparison == 'outside' and (value < conditions['poor']['threshold_low'] or value > conditions['poor']['threshold_high']):
-                                        recommendations.append(f"**{factor.replace('_', ' ')}**: {conditions['poor']['recommendation']}")
-                                    else:
-                                        if 'normal' in conditions:
-                                            recommendations.append(f"**{factor.replace('_', ' ')}**: {conditions['normal']['recommendation']}")
-                                
-                                # Handle categorical variables
-                                elif 'risk' in conditions and 'values' in conditions['risk']:
-                                    if value in conditions['risk']['values']:
-                                        recommendations.append(f"**{factor.replace('_', ' ')}**: {conditions['risk']['recommendation']}")
-                                    elif 'former' in conditions and value in conditions['former'].get('values', []):
-                                        recommendations.append(f"**{factor.replace('_', ' ')}**: {conditions['former']['recommendation']}")
-                                    else:
-                                        if 'none' in conditions:
-                                            recommendations.append(f"**{factor.replace('_', ' ')}**: {conditions['none']['recommendation']}")
-                        
-                        # Display recommendations
-                        for rec in recommendations:
-                            st.write(rec)
-                        
-                        # Add disclaimer
-                        st.markdown("""
-                        <div class='info-box' style='margin-top: 20px;'>
-                        <p><strong>Disclaimer:</strong> This prediction is for informational purposes only and should not 
-                        replace professional medical advice. Always consult with a healthcare provider for proper diagnosis 
-                        and treatment recommendations.</p>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        
+                            """, unsafe_allow_html=True)
+
+
+                            # Add disclaimer
+                            st.markdown("""
+                            <div class='info-box' style='margin-top: 20px; border-color: #FFA726; background-color: #FFF3E0;'>
+                            <p><strong>⚠️ Disclaimer:</strong> This prediction is based on a machine learning model and the data provided. It is for informational purposes only and <strong>does not constitute medical advice</strong>. It cannot replace a thorough evaluation by a qualified healthcare professional. Always consult with your doctor or other qualified health provider regarding any questions you may have about a medical condition or treatment options.</p>
+                            </div>
+                            """, unsafe_allow_html=True)
+
+                        else:
+                            st.error("❌ Prediction failed. Please check input values and model status.")
+
                     except Exception as e:
-                        st.error(f"Error making prediction: {e}")
-                        st.error("Make sure all required features are provided and in the correct format.")
-        
+                        st.error(f"❌ An error occurred during prediction: {e}")
+                        st.error("Please ensure all input fields are filled correctly and the model was trained successfully.")
+
+        # --- Batch Prediction Tab ---
         with tab2:
-            st.subheader("Upload Patient Data CSV")
-            st.write("Upload a CSV file with multiple patient records for batch prediction.")
-            
-            uploaded_csv = st.file_uploader("Upload CSV", type=["csv"])
-            
+            st.subheader("Upload Patient Data CSV for Batch Prediction")
+            st.write(f"Upload a CSV file with patient records. Ensure columns match the features used for training (or the sample data structure): `{', '.join(original_features)}`")
+
+            uploaded_csv = st.file_uploader("Upload CSV for Batch Prediction", type=["csv"], key="batch_uploader")
+
             if uploaded_csv is not None:
                 try:
-                    patients_df = pd.read_csv(uploaded_csv)
+                    patients_df_original = pd.read_csv(uploaded_csv)
                     st.write("Preview of uploaded data:")
-                    st.write(patients_df.head())
-                    
-                    if st.button("Generate Batch Predictions"):
+                    st.dataframe(patients_df_original.head())
+
+                    if st.button("🚀 Generate Batch Predictions", key="batch_predict_button"):
                         with st.spinner("Processing batch predictions..."):
-                            # Preprocess the data similar to training data
-                            patients_df_processed = preprocess_data(patients_df)
-                            
-                            # Ensure columns match training data
-                            for col in st.session_state.X.columns:
-                                if col not in patients_df_processed.columns:
-                                    patients_df_processed[col] = 0
-                            
-                            # Select only columns used in training
-                            patients_df_final = patients_df_processed[st.session_state.X.columns]
-                            
-                            # Scale the data
-                            patients_scaled = st.session_state.scaler.transform(patients_df_final)
-                            
-                            # Make predictions
+                            patients_df = patients_df_original.copy() # Work on a copy
+
+                             # --- Preprocessing Logic for Batch ---
+                            # 1. Handle missing values (using median/mode from training data if available, or from batch itself)
+                            for col in patients_df.columns:
+                                if patients_df[col].isnull().any():
+                                    if pd.api.types.is_numeric_dtype(patients_df[col]):
+                                        # Ideally, use median from training data (st.session_state.X[col].median())
+                                        # Fallback to batch median if training data stats not stored
+                                        batch_median = patients_df[col].median()
+                                        patients_df[col] = patients_df[col].fillna(batch_median)
+                                    elif pd.api.types.is_object_dtype(patients_df[col]):
+                                        batch_mode = patients_df[col].mode()
+                                        patients_df[col] = patients_df[col].fillna(batch_mode[0] if not batch_mode.empty else 'Unknown')
+
+                            # 2. Apply get_dummies
+                            patients_df_dummies = pd.get_dummies(patients_df, drop_first=True, dummy_na=False)
+
+                            # 3. Align columns with training data
+                            patients_df_reindexed = patients_df_dummies.reindex(columns=st.session_state.training_columns, fill_value=0)
+
+                            # 4. Scale using the fitted scaler
+                            try:
+                                patients_scaled = st.session_state.scaler.transform(patients_df_reindexed)
+                            except ValueError as ve:
+                                st.error(f"Scaling error: {ve}")
+                                st.error("This often means the columns in your uploaded CSV do not match the columns the model was trained on after preprocessing.")
+                                st.error(f"Model expects columns: {st.session_state.training_columns}")
+                                st.error(f"Your CSV resulted in columns (after dummies/reindex): {patients_df_reindexed.columns.tolist()}")
+                                st.stop() # Stop execution here
+                            except Exception as e:
+                                st.error(f"An unexpected error occurred during scaling: {e}")
+                                st.stop()
+
+
+                            # --- Make Predictions ---
                             predictions = selected_model.predict(patients_scaled)
                             probabilities = selected_model.predict_proba(patients_scaled)[:, 1]
-                            
-                            # Add predictions to original data
-                            patients_df['Risk Prediction'] = predictions
-                            patients_df['Risk Probability'] = probabilities
-                            
+
+                            # Add predictions back to the original DataFrame copy
+                            patients_df['Predicted_Risk_Label'] = predictions
+                            patients_df['Predicted_Risk_Probability'] = probabilities
+                            patients_df['Predicted_Risk_Category'] = pd.cut(
+                                patients_df['Predicted_Risk_Probability'],
+                                bins=[0, 0.25, 0.5, 0.75, 1.0],
+                                labels=['Low', 'Moderate', 'High', 'Very High'],
+                                include_lowest=True
+                             )
+
                             # Display results
                             st.subheader("Batch Prediction Results")
-                            st.write(patients_df)
-                            
+                            st.dataframe(patients_df)
+
                             # Download results
-                            csv = patients_df.to_csv(index=False)
-                            b64 = base64.b64encode(csv.encode()).decode()
-                            href = f'<a href="data:file/csv;base64,{b64}" download="heart_risk_predictions.csv">Download Predictions CSV</a>'
-                            st.markdown(href, unsafe_allow_html=True)
-                            
+                            csv_results = patients_df.to_csv(index=False).encode('utf-8')
+                            st.download_button(
+                                label="Download Predictions CSV",
+                                data=csv_results,
+                                file_name=f"{model_name}_batch_predictions.csv",
+                                mime='text/csv',
+                             )
+
                             # Summary statistics
-                            high_risk_count = sum(predictions == 1)
-                            high_risk_percentage = (high_risk_count / len(predictions)) * 100
-                            
                             st.subheader("Batch Summary")
-                            
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                st.metric("Total Patients", len(predictions))
-                                st.metric("High Risk Patients", high_risk_count)
-                            with col2:
+                            high_risk_count = sum(predictions == 1)
+                            total_patients = len(predictions)
+                            high_risk_percentage = (high_risk_count / total_patients) * 100 if total_patients > 0 else 0
+
+                            col_sum1, col_sum2 = st.columns(2)
+                            with col_sum1:
+                                st.metric("Total Patients Processed", total_patients)
+                                st.metric("Patients Predicted High Risk", high_risk_count)
+                            with col_sum2:
                                 st.metric("High Risk Percentage", f"{high_risk_percentage:.1f}%")
-                                avg_prob = np.mean(probabilities) * 100
+                                avg_prob = np.mean(probabilities) * 100 if total_patients > 0 else 0
                                 st.metric("Average Risk Probability", f"{avg_prob:.1f}%")
-                            
+
                             # Distribution of risk probabilities
-                            fig, ax = plt.subplots(figsize=(10, 6))
-                            sns.histplot(probabilities, bins=20, kde=True, ax=ax)
-                            plt.title("Distribution of Risk Probabilities")
-                            plt.xlabel("Risk Probability")
-                            plt.ylabel("Count")
-                            st.pyplot(fig)
-                    
+                            st.subheader("Distribution of Predicted Risk Probabilities")
+                            fig_dist, ax_dist = plt.subplots(figsize=(10, 6))
+                            sns.histplot(probabilities, bins=20, kde=True, ax=ax_dist, color='skyblue')
+                            plt.title("Distribution of Risk Probabilities in Batch", fontsize=14)
+                            plt.xlabel("Predicted Risk Probability", fontsize=12)
+                            plt.ylabel("Number of Patients", fontsize=12)
+                            plt.tight_layout()
+                            st.pyplot(fig_dist)
+                            plt.close(fig_dist)
+
+
                 except Exception as e:
-                    st.error(f"Error processing CSV file: {e}")
-                    st.error("Please ensure your CSV has the required features in the correct format.")
+                    st.error(f"❌ Error processing batch CSV file: {e}")
+                    st.error("Please ensure your CSV has the required features and is formatted correctly.")
+
 
 # Footer
+st.markdown("""---""") # Add a visual separator
 st.markdown("""
-<div style="text-align: center; margin-top: 30px; padding: 20px; background-color: #F0F2F6; border-radius: 5px;">
-<p>Created with ❤️ for healthcare professionals and patients</p>
-<p>This application is for educational and informational purposes only.</p>
-<p>Always consult with healthcare professionals for medical advice.</p>
+<div style="text-align: center; margin-top: 30px; padding: 15px; background-color: #F0F2F6; border-radius: 5px; font-size: 0.9em;">
+<p>Created using Streamlit, Scikit-learn, XGBoost, SHAP, and ❤️</p>
+<p>This application is intended for educational and informational purposes only.
+<strong>It is not a substitute for professional medical advice, diagnosis, or treatment.</strong>
+Always consult with a qualified healthcare provider for any health concerns or before making any decisions related to your health or treatment.</p>
 </div>
 """, unsafe_allow_html=True)
+
+# Optional: Clear Matplotlib cache sometimes helps with memory
+# plt.close('all')
