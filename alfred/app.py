@@ -95,6 +95,18 @@ def plot_correlation_heatmap(df):
     plt.title("Feature Correlation Heatmap")
     return fig
 
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, StackingClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVC
+from sklearn.neural_network import MLPClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from xgboost import XGBClassifier
+from imblearn.combine import SMOTETomek
+from itertools import combinations
+import streamlit as st
+
 def train_models(X, y):
     # Class balance with SMOTETomek
     smote_tomek = SMOTETomek(random_state=42)
@@ -111,7 +123,9 @@ def train_models(X, y):
     X_test_scaled = scaler.transform(X_test)
     
     models = {}
+    base_models = {}
 
+    # Model training blocks
     with st.spinner('Training XGBoost model...'):
         xgb = XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=42)
         xgb.fit(X_train_scaled, y_train)
@@ -120,6 +134,7 @@ def train_models(X, y):
             'predictions': xgb.predict(X_test_scaled),
             'probabilities': xgb.predict_proba(X_test_scaled)[:, 1]
         }
+        base_models['XGBoost'] = xgb
 
     with st.spinner('Training Random Forest model...'):
         rf = RandomForestClassifier(random_state=42)
@@ -129,6 +144,7 @@ def train_models(X, y):
             'predictions': rf.predict(X_test_scaled),
             'probabilities': rf.predict_proba(X_test_scaled)[:, 1]
         }
+        base_models['Random Forest'] = rf
 
     with st.spinner('Training Logistic Regression model...'):
         lr = LogisticRegression(random_state=42, max_iter=1000)
@@ -147,6 +163,7 @@ def train_models(X, y):
             'predictions': svm.predict(X_test_scaled),
             'probabilities': svm.predict_proba(X_test_scaled)[:, 1]
         }
+        base_models['SVM'] = svm
 
     with st.spinner('Training Gradient Boosting model...'):
         gb = GradientBoostingClassifier(random_state=42)
@@ -156,6 +173,7 @@ def train_models(X, y):
             'predictions': gb.predict(X_test_scaled),
             'probabilities': gb.predict_proba(X_test_scaled)[:, 1]
         }
+        base_models['Gradient Boosting'] = gb
 
     with st.spinner('Training Neural Network model...'):
         nn = MLPClassifier(hidden_layer_sizes=(100, 50), max_iter=500, random_state=42)
@@ -165,28 +183,58 @@ def train_models(X, y):
             'predictions': nn.predict(X_test_scaled),
             'probabilities': nn.predict_proba(X_test_scaled)[:, 1]
         }
+        base_models['MLP'] = nn
 
-    # Stacked Classifier
-    with st.spinner('Training Stacked Classifier...'):
-        base_learners = [
-            ('lr', lr),
-            ('rf', rf),
-            ('svm', svm)
-        ]
-        stack = StackingClassifier(
-            estimators=base_learners,
-            final_estimator=LogisticRegression(max_iter=1000, random_state=42),
-            cv=5,
-            n_jobs=-1
-        )
-        stack.fit(X_train_scaled, y_train)
-        models['Stacked Classifier'] = {
-            'model': stack,
-            'predictions': stack.predict(X_test_scaled),
-            'probabilities': stack.predict_proba(X_test_scaled)[:, 1]
+    with st.spinner('Training K-Nearest Neighbors model...'):
+        knn = KNeighborsClassifier(n_neighbors=5)
+        knn.fit(X_train_scaled, y_train)
+        models['KNN'] = {
+            'model': knn,
+            'predictions': knn.predict(X_test_scaled),
+            'probabilities': knn.predict_proba(X_test_scaled)[:, 1]
         }
+        base_models['KNN'] = knn
 
-    return models, X_train, X_test, y_train, y_test, scaler, X_train_scaled, X_test_scaled
+        # Define all base models
+    base_models = {
+        'SVM': svm,
+        'Random Forest': rf,
+        'MLP': nn,
+        'KNN': knn,
+        'XGBoost': xgb,
+        'Gradient Boosting': gb
+    }
+
+    # Define combinations to skip
+    skip_pairs = {
+        ("XGBoost", "SVM"),
+        ("Gradient Boosting", "SVM"),
+        ("Random Forest", "SVM"),
+        ("MLP", "SVM"),
+        ("XGBoost", "MLP"),
+        ("Gradient Boosting", "MLP")
+    }
+
+    # Generate model pairs and train stacked classifiers
+    pairs = list(combinations(base_models.items(), 2))
+    for (name1, model1), (name2, model2) in pairs:
+        if (name1, name2) in skip_pairs or (name2, name1) in skip_pairs:
+            continue
+
+        clf_name = f'Stacked: {name1} + {name2}'
+        with st.spinner(f'Training Stacked Classifier: {name1} + {name2}...'):
+            stack = StackingClassifier(
+                estimators=[(name1, model1), (name2, model2)],
+                final_estimator=LogisticRegression(max_iter=1000, random_state=42),
+                cv=5,
+                n_jobs=-1
+            )
+            stack.fit(X_train_scaled, y_train)
+            models[clf_name] = {
+                'model': stack,
+                'predictions': stack.predict(X_test_scaled),
+                'probabilities': stack.predict_proba(X_test_scaled)[:, 1]
+            }
 
 def plot_confusion_matrix(y_true, y_pred, title):
     fig, ax = plt.subplots(figsize=(6, 5))
