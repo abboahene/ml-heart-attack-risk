@@ -16,6 +16,8 @@ import shap
 import base64
 from io import BytesIO
 import time
+from sklearn.ensemble import StackingClassifier
+from sklearn.linear_model import LogisticRegression
 
 # Set page configuration
 st.set_page_config(
@@ -108,9 +110,8 @@ def train_models(X, y):
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test)
     
-    # Train models
     models = {}
-    
+
     with st.spinner('Training XGBoost model...'):
         xgb = XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=42)
         xgb.fit(X_train_scaled, y_train)
@@ -119,7 +120,7 @@ def train_models(X, y):
             'predictions': xgb.predict(X_test_scaled),
             'probabilities': xgb.predict_proba(X_test_scaled)[:, 1]
         }
-    
+
     with st.spinner('Training Random Forest model...'):
         rf = RandomForestClassifier(random_state=42)
         rf.fit(X_train_scaled, y_train)
@@ -128,7 +129,7 @@ def train_models(X, y):
             'predictions': rf.predict(X_test_scaled),
             'probabilities': rf.predict_proba(X_test_scaled)[:, 1]
         }
-    
+
     with st.spinner('Training Logistic Regression model...'):
         lr = LogisticRegression(random_state=42, max_iter=1000)
         lr.fit(X_train_scaled, y_train)
@@ -137,7 +138,7 @@ def train_models(X, y):
             'predictions': lr.predict(X_test_scaled),
             'probabilities': lr.predict_proba(X_test_scaled)[:, 1]
         }
-    
+
     with st.spinner('Training Support Vector Machine model...'):
         svm = SVC(random_state=42, probability=True)
         svm.fit(X_train_scaled, y_train)
@@ -146,7 +147,7 @@ def train_models(X, y):
             'predictions': svm.predict(X_test_scaled),
             'probabilities': svm.predict_proba(X_test_scaled)[:, 1]
         }
-    
+
     with st.spinner('Training Gradient Boosting model...'):
         gb = GradientBoostingClassifier(random_state=42)
         gb.fit(X_train_scaled, y_train)
@@ -155,7 +156,7 @@ def train_models(X, y):
             'predictions': gb.predict(X_test_scaled),
             'probabilities': gb.predict_proba(X_test_scaled)[:, 1]
         }
-    
+
     with st.spinner('Training Neural Network model...'):
         nn = MLPClassifier(hidden_layer_sizes=(100, 50), max_iter=500, random_state=42)
         nn.fit(X_train_scaled, y_train)
@@ -164,7 +165,27 @@ def train_models(X, y):
             'predictions': nn.predict(X_test_scaled),
             'probabilities': nn.predict_proba(X_test_scaled)[:, 1]
         }
-    
+
+    # Stacked Classifier
+    with st.spinner('Training Stacked Classifier...'):
+        base_learners = [
+            ('lr', lr),
+            ('rf', rf),
+            ('svm', svm)
+        ]
+        stack = StackingClassifier(
+            estimators=base_learners,
+            final_estimator=LogisticRegression(max_iter=1000, random_state=42),
+            cv=5,
+            n_jobs=-1
+        )
+        stack.fit(X_train_scaled, y_train)
+        models['Stacked Classifier'] = {
+            'model': stack,
+            'predictions': stack.predict(X_test_scaled),
+            'probabilities': stack.predict_proba(X_test_scaled)[:, 1]
+        }
+
     return models, X_train, X_test, y_train, y_test, scaler, X_train_scaled, X_test_scaled
 
 def plot_confusion_matrix(y_true, y_pred, title):
