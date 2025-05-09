@@ -5,7 +5,6 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
 from sklearn.neural_network import MLPClassifier
@@ -16,8 +15,9 @@ import shap
 import base64
 from io import BytesIO
 import time
-from sklearn.ensemble import StackingClassifier
-from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, StackingClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from itertools import combinations
 
 # Set page configuration
 st.set_page_config(
@@ -94,18 +94,6 @@ def plot_correlation_heatmap(df):
     sns.heatmap(corr, mask=mask, annot=False, cmap='coolwarm', ax=ax, vmin=-1, vmax=1)
     plt.title("Feature Correlation Heatmap")
     return fig
-
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, StackingClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
-from sklearn.svm import SVC
-from sklearn.neural_network import MLPClassifier
-from sklearn.neighbors import KNeighborsClassifier
-from xgboost import XGBClassifier
-from imblearn.combine import SMOTETomek
-from itertools import combinations
-import streamlit as st
 
 def train_models(X, y):
     # Class balance with SMOTETomek
@@ -195,7 +183,6 @@ def train_models(X, y):
         }
         base_models['KNN'] = knn
 
-        # Define all base models
     base_models = {
         'SVM': svm,
         'Random Forest': rf,
@@ -205,36 +192,47 @@ def train_models(X, y):
         'Gradient Boosting': gb
     }
 
-    # Define combinations to skip
-    skip_pairs = {
-        ("XGBoost", "SVM"),
-        ("Gradient Boosting", "SVM"),
-        ("Random Forest", "SVM"),
-        ("MLP", "SVM"),
-        ("XGBoost", "MLP"),
-        ("Gradient Boosting", "MLP")
+    # Define combinations to skip (bad combinations)
+    skip_combinations = {
+        ("SVM", "KNN"),             # SVM and KNN both rely on distance-based decision boundaries
+        ("XGBoost", "Gradient Boosting"),   # Both are gradient boosting methods
+        ("Random Forest", "XGBoost"),      # Both are tree-based methods
+        ("MLP", "KNN"),              # Neural nets (MLP) and KNN are non-parametric models
+        ("SVM", "Random Forest"),    # Both are non-linear models
+        ("SVM", "XGBoost"),         # Both models are computationally expensive with limited complementary benefits
+        ("Gradient Boosting", "KNN"),   # Combining gradient boosting and KNN does not leverage their strengths
     }
 
-    # Generate model pairs and train stacked classifiers
-    pairs = list(combinations(base_models.items(), 2))
-    for (name1, model1), (name2, model2) in pairs:
-        if (name1, name2) in skip_pairs or (name2, name1) in skip_pairs:
-            continue
+    # Generate model combinations from 2 to n-1
+    for r in range(2, len(base_models)):  # r is the size of combinations (2 to n-1)
+        for combo in combinations(base_models.items(), r):
+            # Create a sorted tuple of model names to ensure order doesn't matter
+            combo_names = tuple(sorted([name for name, _ in combo]))  
 
-        clf_name = f'Stacked: {name1} + {name2}'
-        with st.spinner(f'Training Stacked Classifier: {name1} + {name2}...'):
-            stack = StackingClassifier(
-                estimators=[(name1, model1), (name2, model2)],
-                final_estimator=LogisticRegression(max_iter=1000, random_state=42),
-                cv=5,
-                n_jobs=-1
-            )
-            stack.fit(X_train_scaled, y_train)
-            models[clf_name] = {
-                'model': stack,
-                'predictions': stack.predict(X_test_scaled),
-                'probabilities': stack.predict_proba(X_test_scaled)[:, 1]
-            }
+            # Skip if the combination is in skip_combinations
+            if combo_names in skip_combinations:
+                continue
+
+            # Create the name for the stacked model
+            clf_name = f"Stacked: {' + '.join([name for name, _ in combo])}"
+
+            with st.spinner(f'Training Stacked Classifier: {clf_name}...'):
+                # Create a list of tuples (name, model) for the stacked model
+                estimators = [(name, model) for name, model in combo]
+
+                # Train the stacked classifier
+                stack = StackingClassifier(
+                    estimators=estimators,
+                    final_estimator=LogisticRegression(max_iter=1000, random_state=42),
+                    cv=5,
+                    n_jobs=-1
+                )
+                stack.fit(X_train_scaled, y_train)
+                models[clf_name] = {
+                    'model': stack,
+                    'predictions': stack.predict(X_test_scaled),
+                    'probabilities': stack.predict_proba(X_test_scaled)[:, 1]
+                }
 
 def plot_confusion_matrix(y_true, y_pred, title):
     fig, ax = plt.subplots(figsize=(6, 5))
