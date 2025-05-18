@@ -222,19 +222,23 @@ def plot_correlation_heatmap(df):
         ax.text(0.5, 0.5, "No numeric columns found for correlation.", ha='center', va='center')
     return fig
 
-# @st.cache_data # Caching models can be complex due to object state
+from sklearn.ensemble import StackingClassifier
+from sklearn.model_selection import StratifiedKFold
+from xgboost import XGBClassifier
+
 def train_models(X_train_df, y_train_series):
-    """Trains multiple classification models after resampling and scaling, including a stacking classifier."""
+    """Trains multiple classification models after resampling and scaling, including an enhanced stacking classifier."""
     models = {}
     training_times = {}
 
-    # Class balance with SMOTETomek
+    # Convert to numpy arrays
     X_np = X_train_df.values
     y_np = y_train_series.values
 
     st.write(f"Original training data shape: {X_np.shape}")
     st.write(f"Original training target distribution: {np.bincount(y_np)}")
 
+    # Resampling
     smote_tomek = SMOTETomek(random_state=42, n_jobs=-1)
     try:
         X_resampled, y_resampled = smote_tomek.fit_resample(X_np, y_np)
@@ -245,15 +249,16 @@ def train_models(X_train_df, y_train_series):
         st.warning("Proceeding without resampling.")
         X_resampled, y_resampled = X_np, y_np
 
+    # Scaling
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_resampled)
 
-    # --- Model Definitions ---
+    # --- Base Models ---
     model_defs = {
         'XGBoost': XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=42),
-        'Random Forest': RandomForestClassifier(random_state=42, n_jobs=-1),
-        'Logistic Regression': LogisticRegression(random_state=42, max_iter=1000, solver='liblinear'),
-        'SVM': SVC(random_state=42, probability=True),
+        'Random Forest': RandomForestClassifier(random_state=42, n_jobs=-1, class_weight='balanced'),
+        'Logistic Regression': LogisticRegression(random_state=42, max_iter=1000, solver='liblinear', class_weight='balanced'),
+        'SVM': SVC(random_state=42, probability=True, class_weight='balanced'),
         'Gradient Boosting': GradientBoostingClassifier(random_state=42),
         'Neural Network': MLPClassifier(hidden_layer_sizes=(100, 50), max_iter=500, random_state=42, early_stopping=True)
     }
@@ -266,9 +271,7 @@ def train_models(X_train_df, y_train_series):
                 model_instance.fit(X_train_scaled, y_resampled)
                 elapsed_time = time.time() - start_time
                 training_times[name] = elapsed_time
-                models[name] = {
-                    'model': model_instance,
-                }
+                models[name] = {'model': model_instance}
                 st.write(f"✔️ {name} trained in {elapsed_time:.2f} sec")
             except Exception as e:
                 st.error(f"Error training {name}: {e}")
@@ -278,27 +281,27 @@ def train_models(X_train_df, y_train_series):
         start_time = time.time()
         try:
             estimators = [
+                ('lr', model_defs['Logistic Regression']),
+                ('svm', model_defs['SVM']),
                 ('rf', model_defs['Random Forest']),
                 ('xgb', model_defs['XGBoost']),
-                ('svm', model_defs['SVM']),
-                ('gb', model_defs['Gradient Boosting']),
                 ('mlp', model_defs['Neural Network'])
             ]
-            final_estimator = LogisticRegression(random_state=42, max_iter=1000, solver='liblinear')
+
+            final_estimator = XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=42)
 
             stacking_clf = StackingClassifier(
                 estimators=estimators,
                 final_estimator=final_estimator,
-                cv=5,
-                n_jobs=-1,
-                passthrough=False
+                passthrough=True,  # Allows meta-model to see original features
+                cv=StratifiedKFold(n_splits=5, shuffle=True, random_state=42),
+                n_jobs=-1
             )
             stacking_clf.fit(X_train_scaled, y_resampled)
+
             elapsed_time = time.time() - start_time
             training_times['Stacking Classifier'] = elapsed_time
-            models['Stacking Classifier'] = {
-                'model': stacking_clf,
-            }
+            models['Stacking Classifier'] = {'model': stacking_clf}
             st.write(f"✔️ Stacking Classifier trained in {elapsed_time:.2f} sec")
         except Exception as e:
             st.error(f"Error training Stacking Classifier: {e}")
