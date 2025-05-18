@@ -18,6 +18,8 @@ import base64
 from io import BytesIO
 import time
 import warnings
+from sklearn.ensemble import StackingClassifier
+from sklearn.pipeline import make_pipeline
 
 # Suppress warnings
 warnings.filterwarnings('ignore')
@@ -222,19 +224,18 @@ def plot_correlation_heatmap(df):
 
 # @st.cache_data # Caching models can be complex due to object state
 def train_models(X_train_df, y_train_series):
-    """Trains multiple classification models after resampling and scaling."""
+    """Trains multiple classification models after resampling and scaling, including a stacking classifier."""
     models = {}
     training_times = {}
 
     # Class balance with SMOTETomek
-    # Ensure X and y are numpy arrays before resampling
     X_np = X_train_df.values
     y_np = y_train_series.values
 
     st.write(f"Original training data shape: {X_np.shape}")
     st.write(f"Original training target distribution: {np.bincount(y_np)}")
 
-    smote_tomek = SMOTETomek(random_state=42, n_jobs=-1) # Use n_jobs for potential speedup
+    smote_tomek = SMOTETomek(random_state=42, n_jobs=-1)
     try:
         X_resampled, y_resampled = smote_tomek.fit_resample(X_np, y_np)
         st.write(f"Resampled training data shape: {X_resampled.shape}")
@@ -242,34 +243,24 @@ def train_models(X_train_df, y_train_series):
     except Exception as e:
         st.error(f"Error during resampling with SMOTETomek: {e}")
         st.warning("Proceeding without resampling.")
-        X_resampled, y_resampled = X_np, y_np # Fallback to original data
-
-    # Split resampled data (or original if resampling failed)
-    # Note: We already split the original data before calling this function.
-    # Here we just scale the training data provided (X_train_df).
-    # The scaling should happen based on the training data.
-
-    # We don't need another train/test split here. The data passed in
-    # (X_train_df, y_train_series) is the training set.
-    # We'll scale this training set and use it to train models.
-    # The test set (from the initial split) will be scaled using the *same* scaler.
+        X_resampled, y_resampled = X_np, y_np
 
     scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_resampled) # Fit scaler on (potentially resampled) training data
+    X_train_scaled = scaler.fit_transform(X_resampled)
 
     # --- Model Definitions ---
     model_defs = {
         'XGBoost': XGBClassifier(use_label_encoder=False, eval_metric='logloss', random_state=42),
         'Random Forest': RandomForestClassifier(random_state=42, n_jobs=-1),
-        'Logistic Regression': LogisticRegression(random_state=42, max_iter=1000, solver='liblinear'), # Changed solver
+        'Logistic Regression': LogisticRegression(random_state=42, max_iter=1000, solver='liblinear'),
         'SVM': SVC(random_state=42, probability=True),
         'Gradient Boosting': GradientBoostingClassifier(random_state=42),
-        'Neural Network': MLPClassifier(hidden_layer_sizes=(100, 50), max_iter=500, random_state=42, early_stopping=True) # Added early stopping
+        'Neural Network': MLPClassifier(hidden_layer_sizes=(100, 50), max_iter=500, random_state=42, early_stopping=True)
     }
 
-    # --- Train Models ---
+    # --- Train Base Models ---
     for name, model_instance in model_defs.items():
-         with st.spinner(f'Training {name} model...'):
+        with st.spinner(f'Training {name} model...'):
             start_time = time.time()
             try:
                 model_instance.fit(X_train_scaled, y_resampled)
@@ -277,13 +268,42 @@ def train_models(X_train_df, y_train_series):
                 training_times[name] = elapsed_time
                 models[name] = {
                     'model': model_instance,
-                    # Predictions/probabilities will be done later on the test set
                 }
                 st.write(f"✔️ {name} trained in {elapsed_time:.2f} sec")
             except Exception as e:
                 st.error(f"Error training {name}: {e}")
 
-    return models, scaler, training_times, X_train_scaled, y_resampled # Return fitted scaler and potentially resampled data
+    # --- Stacking Classifier ---
+    with st.spinner('Training Stacking Classifier...'):
+        start_time = time.time()
+        try:
+            estimators = [
+                ('rf', model_defs['Random Forest']),
+                ('xgb', model_defs['XGBoost']),
+                ('svm', model_defs['SVM']),
+                ('gb', model_defs['Gradient Boosting']),
+                ('mlp', model_defs['Neural Network'])
+            ]
+            final_estimator = LogisticRegression(random_state=42, max_iter=1000, solver='liblinear')
+
+            stacking_clf = StackingClassifier(
+                estimators=estimators,
+                final_estimator=final_estimator,
+                cv=5,
+                n_jobs=-1,
+                passthrough=False
+            )
+            stacking_clf.fit(X_train_scaled, y_resampled)
+            elapsed_time = time.time() - start_time
+            training_times['Stacking Classifier'] = elapsed_time
+            models['Stacking Classifier'] = {
+                'model': stacking_clf,
+            }
+            st.write(f"✔️ Stacking Classifier trained in {elapsed_time:.2f} sec")
+        except Exception as e:
+            st.error(f"Error training Stacking Classifier: {e}")
+
+    return models, scaler, training_times, X_train_scaled, y_resampled
 
 def evaluate_models(models, X_test_scaled, y_test):
     """Evaluates trained models on the test set."""
