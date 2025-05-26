@@ -120,19 +120,34 @@ def load_sample_data():
         # Sample data with realistic heart attack risk features
         data = {
             'Age': np.random.randint(30, 80, 1000),
-            'Sex': np.random.choice(['Male', 'Female'], 1000),
-            'Cholesterol': np.random.randint(150, 350, 1000), # Increased max range slightly
-            'Blood_Pressure': np.random.randint(90, 180, 1000), # Systolic BP
-            'Heart_Rate': np.random.randint(60, 105, 1000), # Increased max range slightly
-            'BMI': np.round(np.random.uniform(18.5, 40, 1000), 1), # Wider BMI range
-            'Smoking': np.random.choice(['Never', 'Former', 'Current'], 1000),
-            'Diabetes': np.random.choice(['No', 'Yes'], 1000),
-            'Family_History': np.random.choice(['No', 'Yes'], 1000),
-            'Exercise_Hours': np.round(np.random.uniform(0, 15, 1000), 1), # Increased max range
-            'Stress_Level': np.random.randint(1, 10, 1000),
-            'Heart_Attack_Risk': np.random.choice([0, 1], 1000, p=[0.65, 0.35]) # Slightly higher risk prevalence
+            'Gender': np.random.choice(['Male', 'Female'], 1000),
+            'Cholesterol': np.random.randint(150, 350, 1000),
+            'Systolic blood pressure': np.random.randint(90, 180, 1000),
+            'Diastolic blood pressure': np.random.randint(60, 120, 1000),
+            'Heart rate': np.random.randint(60, 105, 1000),
+            'Diabetes': np.random.choice([0, 1], 1000),
+            'Family History': np.random.choice([0, 1], 1000),
+            'Smoking': np.random.choice([0, 1], 1000),
+            'Obesity': np.random.choice([0, 1], 1000),
+            'Alcohol Consumption': np.random.choice([0, 1], 1000),
+            'Exercise Hours Per Week': np.round(np.random.uniform(0, 15, 1000), 1),
+            'Diet': np.random.choice([0, 1, 2], 1000),
+            'Previous Heart Problems': np.random.choice([0, 1], 1000),
+            'Medication Use': np.random.choice([0, 1], 1000),
+            'Stress Level': np.random.randint(1, 10, 1000),
+            'Sedentary Hours Per Day': np.round(np.random.uniform(0, 16, 1000), 1),
+            'Income': np.round(np.random.uniform(0, 1, 1000), 4),
+            'BMI': np.round(np.random.uniform(18.5, 40, 1000), 1),
+            'Triglycerides': np.round(np.random.uniform(0, 1, 1000), 4),
+            'Physical Activity Days Per Week': np.random.randint(0, 8, 1000),
+            'Sleep Hours Per Day': np.round(np.random.uniform(0, 12, 1000), 1),
+            'Blood sugar': np.round(np.random.uniform(0, 0.5, 1000), 4),
+            'CK-MB': np.round(np.random.uniform(0, 1, 1000), 4),
+            'Troponin': np.round(np.random.uniform(0, 0.1, 1000), 4),
+            'Heart Attack Risk': np.random.choice([0, 1], 1000, p=[0.65, 0.35])
         }
         df = pd.DataFrame(data)
+        
         return df
     except Exception as e:
         st.error(f"Error generating sample data: {e}")
@@ -167,7 +182,7 @@ def preprocess_data(df, fit_scaler=False, scaler=None, training_columns=None):
     # Use dummy_na=False to avoid columns for NaN categories
     df_processed = pd.get_dummies(df_processed, drop_first=True, dummy_na=False)
 
-    # Align columns with training data if training_columns are provided (for prediction)
+    # Align columns with training data if training_columns are not None (for prediction)
     if training_columns is not None:
         # Get missing columns in the new data
         missing_cols = set(training_columns) - set(df_processed.columns)
@@ -178,7 +193,7 @@ def preprocess_data(df, fit_scaler=False, scaler=None, training_columns=None):
 
     # Separate features (X) and target (y) if target exists
     target_col = None
-    possible_targets = ['Heart_Attack_Risk', 'HeartAttackRisk', 'Risk', 'target', 'output']
+    possible_targets = ['Heart_Attack_Risk', 'HeartAttackRisk', 'Heart Attack Risk', 'Heart Attack Risk (Binary)', 'Risk', 'target', 'output']
     for col in possible_targets:
         if col in df_processed.columns:
             target_col = col
@@ -234,6 +249,17 @@ def train_models(X_train_df, y_train_series):
     # Convert to numpy arrays
     X_np = X_train_df.values
     y_np = y_train_series.values
+    
+    # Ensure target is integer type for classification
+    if not np.issubdtype(y_np.dtype, np.integer):
+        st.write(f"Converting target variable from {y_np.dtype} to integer type")
+        try:
+            # Handle potential floating-point targets by rounding first
+            y_np = np.round(y_np).astype(int)
+        except Exception as e:
+            st.error(f"Error converting target to integer: {e}")
+            st.error("Please ensure your target variable is binary (0/1) or can be safely converted to integers")
+            return {}, None, {}, None, None
 
     st.write(f"Original training data shape: {X_np.shape}")
     st.write(f"Original training target distribution: {np.bincount(y_np)}")
@@ -649,7 +675,7 @@ if app_mode == "Home":
     with col2:
         # Placeholder for an image or graphic
         st.image("https://img.icons8.com/external-flaticons-lineal-color-flat-icons/256/external-heart-anatomy-flaticons-lineal-color-flat-icons-3.png",
-                 caption="Heart Health Analytics", use_column_width=True)
+                 caption="Heart Health Analytics", use_container_width=True)
         st.info("Navigate through the app sections using the sidebar menu.")
 
 
@@ -758,7 +784,7 @@ elif app_mode == "Data Exploration":
         # Target variable distribution
         st.subheader("Target Variable Distribution")
         target_col = None
-        possible_targets = ['Heart_Attack_Risk', 'HeartAttackRisk', 'Risk', 'target', 'output'] # Add 'output'
+        possible_targets = ['Heart_Attack_Risk', 'HeartAttackRisk','Heart Attack Risk', 'Heart Attack Risk (Binary)', 'Risk', 'target', 'output'] # Add 'output'
         for col in possible_targets:
             if col in df.columns:
                 target_col = col
@@ -812,7 +838,7 @@ elif app_mode == "Data Exploration":
                 st.session_state.feature_names = None
                 st.session_state.training_columns = None
         else:
-            st.warning("⚠️ No recognized target column found (looked for: 'Heart_Attack_Risk', 'HeartAttackRisk', 'Risk', 'target', 'output'). Please ensure your data has a binary target variable with one of these names to enable model training.")
+            st.warning("⚠️ No recognized target column found (looked for: 'Heart_Attack_Risk', 'HeartAttackRisk', 'Heart Attack Risk', 'Heart Attack Risk (Binary)', 'Risk', 'target', 'output'). Please ensure your data has a binary target variable with one of these names to enable model training.")
 
         # Correlation heatmap (optional) - uses processed numeric features
         st.subheader("Feature Correlations (Numeric Only)")
@@ -1226,7 +1252,7 @@ elif app_mode == "Risk Prediction":
                 original_df_columns = load_sample_data().columns # Use sample data structure as template
                 # Find the target column used during training
                 target_col_form = None
-                possible_targets = ['Heart_Attack_Risk', 'HeartAttackRisk', 'Risk', 'target', 'output']
+                possible_targets = ['Heart_Attack_Risk', 'HeartAttackRisk', 'Heart Attack Risk', 'Heart Attack Risk (Binary)', 'Risk', 'target', 'output']
                 for col in possible_targets:
                     if col in original_df_columns:
                          target_col_form = col
