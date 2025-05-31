@@ -20,6 +20,17 @@ import time
 import warnings
 from sklearn.ensemble import StackingClassifier
 from sklearn.pipeline import make_pipeline
+# Import dimensionality reduction modules
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
+from sklearn.feature_selection import SelectKBest, f_classif, RFE
+
+# List of key features to focus on for heart attack risk prediction
+KEY_FEATURES = [
+    'Age', 'Gender', 'Cholesterol', 'Systolic blood pressure', 'Diastolic blood pressure',
+    'BMI', 'Diabetes', 'Smoking', 'Previous Heart Problems', 'Family History',
+    'Exercise Hours Per Week', 'Stress Level', 'Heart rate', 'Blood sugar', 'Triglycerides'
+]
 
 # Suppress warnings
 warnings.filterwarnings('ignore')
@@ -161,6 +172,33 @@ def preprocess_data(df, fit_scaler=False, scaler=None, training_columns=None):
     Aligns columns with training data if provided.
     """
     df_processed = df.copy() # Avoid modifying original df
+    
+    # Filter to include only KEY_FEATURES if they exist in the dataframe
+    available_key_features = [col for col in KEY_FEATURES if col in df_processed.columns]
+    
+    # Check if we have at least some key features
+    if available_key_features:
+        st.info(f"Filtering data to include only {len(available_key_features)} key features from the predefined list of {len(KEY_FEATURES)} features.")
+        
+        # Find the target column
+        target_col = None
+        possible_targets = ['Heart_Attack_Risk', 'HeartAttackRisk', 'Heart Attack Risk', 'Heart Attack Risk (Binary)', 'Risk', 'target', 'output']
+        for col in possible_targets:
+            if col in df_processed.columns:
+                target_col = col
+                break
+        
+        # Filter columns to keep only key features + target column
+        columns_to_keep = available_key_features.copy()
+        if target_col:
+            columns_to_keep.append(target_col)
+        
+        df_processed = df_processed[columns_to_keep]
+        
+        # Log the columns being used
+        st.write(f"Using features: {', '.join(available_key_features)}")
+    else:
+        st.warning("None of the key features were found in the dataset. Using all available features instead.")
 
     # Handle missing values
     for col in df_processed.columns:
