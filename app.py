@@ -421,7 +421,29 @@ def plot_feature_importance(model, feature_names, title, top_n=20):
     importances = None
     importance_label = "Importance"
 
-    if hasattr(model, 'feature_importances_'):
+    # Check if model is a StackingClassifier
+    if isinstance(model, StackingClassifier):
+        # Get the final estimator (meta-model)
+        final_estimator = model.final_estimator_
+
+        # Check if the final estimator has feature importance
+        if hasattr(final_estimator, 'feature_importances_'):
+            # For XGBoost or Random Forest as final estimator
+            importances = final_estimator.feature_importances_
+            importance_label = "Meta-Model Feature Importance"
+        elif hasattr(final_estimator, 'coef_'):
+            # For linear models as final estimator
+            importances = np.abs(final_estimator.coef_[0])
+            importance_label = "Meta-Model Coefficient Magnitude"
+        else:
+            st.info(f"Feature importance not available for the meta-model in Stacking Classifier.")
+            return None
+
+        # Warning about interpretation
+        st.info("Note: For Stacking Classifiers, feature importance reflects the meta-model's weighting of base model predictions, not original features.")
+
+    # Standard handling for other model types
+    elif hasattr(model, 'feature_importances_'):
         importances = model.feature_importances_
     elif hasattr(model, 'coef_'):
         # For linear models, use absolute coefficients
@@ -431,8 +453,43 @@ def plot_feature_importance(model, feature_names, title, top_n=20):
         st.info(f"Feature importance not directly available for {type(model).__name__}.")
         return None # Model doesn't support direct feature importance
 
+    # Create visualization if we have importances
     if importances is not None:
-        feature_importance_df = pd.DataFrame({'Feature': feature_names, 'Importance': importances})
+        # For Stacking Classifier, adapt the feature names
+        if isinstance(model, StackingClassifier):
+            # If using passthrough=True, the final estimator sees both 
+            # the original features and the predictions from base estimators
+            if model.passthrough:
+                # Create feature names for base model predictions + original features
+                estimator_names = [name for name, _ in model.estimators]
+                num_base_models = len(estimator_names)
+                
+                # Check if the feature count makes sense
+                if len(importances) == num_base_models + len(feature_names):
+                    # Features are: [base_model_1, base_model_2, ..., original_feature_1, original_feature_2, ...]
+                    meta_feature_names = estimator_names + feature_names
+                elif len(importances) == num_base_models:
+                    # Only base model predictions
+                    meta_feature_names = estimator_names
+                else:
+                    # Can't reliably determine feature mapping, use generic names
+                    meta_feature_names = [f"Meta-Feature {i+1}" for i in range(len(importances))]
+            else:
+                # Only base model predictions
+                meta_feature_names = [name for name, _ in model.estimators]
+                if len(meta_feature_names) != len(importances):
+                    meta_feature_names = [f"Meta-Feature {i+1}" for i in range(len(importances))]
+            
+            # Create DataFrame with meta-model feature importances
+            feature_importance_df = pd.DataFrame({
+                'Feature': meta_feature_names[:len(importances)], 
+                'Importance': importances
+            })
+        else:
+            # Standard feature importance for non-stacking models
+            feature_importance_df = pd.DataFrame({'Feature': feature_names, 'Importance': importances})
+        
+        # Sort and limit to top N features
         feature_importance_df = feature_importance_df.sort_values(by='Importance', ascending=False).head(top_n)
 
         fig, ax = plt.subplots(figsize=(12, max(6, len(feature_importance_df) * 0.4))) # Dynamic height
